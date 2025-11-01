@@ -27,7 +27,7 @@ def send_message(chat_id, text):
 
 # Устанавливаем webhook
 def set_webhook():
-    webhook_url = "https://calories-bot-ltzv.onrender.com" + TOKEN
+    webhook_url = "https://api.telegram.org/bot7903103217:AAGhY6XuIX-hib2TmqacNjGOU0UjT0ZokOI/setWebhook?url=https://calories-bot-ltzv.onrender.com/7903103217:AAGhY6XuIX-hib2TmqacNjGOU0UjT0ZokOI
     requests.get(URL + f"setWebhook?url={webhook_url}")
 
 if __name__ == "__main__":
