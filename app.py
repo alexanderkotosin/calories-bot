@@ -7,20 +7,32 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+# === Конфигурация из переменных окружения ===
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 BOT_API = f"https://api.telegram.org/bot{TOKEN}"
 
-AI_ENDPOINT = os.getenv("AI_ENDPOINT", "")  # URL сервера ИИ (мы добавим позже)
-AI_KEY = os.getenv("AI_KEY", "")            # если нужен ключ (может быть пустым для MVP)
+AI_ENDPOINT = os.getenv("AI_ENDPOINT", "")
+AI_KEY = os.getenv("AI_KEY", "")
 
-# Память в рантайме
+# === Память в рантайме ===
+# Профиль пользователя живёт, пока не перезапущен сервис.
+# Дневник еды сбрасывается раз в сутки (today_key меняется).
 profiles = {}  # profiles[user_id] = {...}
-diary = {}     # diary[user_id] = {"day": "yyyymmdd", "meals":[...], "total_kcal": float, "total_p":float, "total_f":float, "total_c":float}
+diary = {}     # diary[user_id] = {"day": "YYYYMMDD", "meals": [...], totals...}
+
+
+# ========= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 def today_key():
+    # Можно заменить на локальную зону, но пока хватит UTC
     return time.strftime("%Y%m%d", time.gmtime())
 
+
 def ensure_diary(user_id):
+    """
+    Инициализируем дневник на сегодня.
+    Если день сменился -> обнуляем, профиль остаётся.
+    """
     dkey = today_key()
     if user_id not in diary or diary[user_id]["day"] != dkey:
         diary[user_id] = {
@@ -33,21 +45,23 @@ def ensure_diary(user_id):
         }
     return diary[user_id]
 
+
 def calc_profile_numbers(profile):
+    """Расчёт BMR, калорий на поддержание и дефицита ~20%."""
     age = profile["age"]
     weight = profile["weight"]
     height = profile["height"]
     sex = profile["sex"]
     activity_factor = profile["activity_factor"]
 
-    # Миффлин-Сан Жеор
+    # Формула Миффлина–Сан Жеора
     if sex == "male":
         bmr = 10 * weight + 6.25 * height - 5 * age + 5
     else:
         bmr = 10 * weight + 6.25 * height - 5 * age - 161
 
     maintenance = bmr * activity_factor
-    deficit = maintenance * 0.80  # -20%
+    deficit = maintenance * 0.80
 
     return {
         "bmr": round(bmr),
@@ -55,212 +69,196 @@ def calc_profile_numbers(profile):
         "deficit": round(deficit),
     }
 
+
 def parse_profile_text(text):
-    age_match = re.search(r'возраст\s+(\d+)', text, re.IGNORECASE)
-    height_match = re.search(r'рост\s+(\d+)', text, re.IGNORECASE)
-    weight_match = re.search(r'вес\s+(\d+)', text, re.IGNORECASE)
-    goal_match = re.search(r'цель\s+(\d+)', text, re.IGNORECASE)
+    """
+    Парсим профиль на RU / EN / SR.
+    Формат можно набирать хоть столбиком, хоть строкой.
+    Главное — чтобы были ключевые слова из шаблона:
 
-    act_factor = 1.35  # по умолчанию "средняя"
-    if re.search(r'низк|сидяч', text, re.IGNORECASE):
-        act_factor = 1.2
-    elif re.search(r'высок|актив', text, re.IGNORECASE):
-        act_factor = 1.55
+    RU: возраст, рост, вес, цель, активность
+    EN: age, height, weight, goal, activity
+    SR: godine/godina, visina, tezina, cilj, aktivnost
+    """
 
-    sex = "male"  # пока фикс
+    # возраст / age / godine
+    age_match = re.search(
+        r'(возраст|age|godine|godina)\s*[:\-]?\s*(\d+)',
+        text, re.IGNORECASE
+    )
+    height_match = re.search(
+        r'(рост|height|visina)\s*[:\-]?\s*(\d+)',
+        text, re.IGNORECASE
+    )
+    weight_match = re.search(
+        r'(вес|weight|težina|tezina)\s*[:\-]?\s*(\d+)',
+        text, re.IGNORECASE
+    )
+    goal_match = re.search(
+        r'(цель|goal|cilj)\s*[:\-]?\s*(\d+)',
+        text, re.IGNORECASE
+    )
 
     if not (age_match and height_match and weight_match and goal_match):
         return None
 
+    age = int(age_match.group(2))
+    height = int(height_match.group(2))
+    weight = float(weight_match.group(2))
+    goal = float(goal_match.group(2))
+
+    # Активность: RU / EN / SR
+    act_factor = 1.35  # по умолчанию средняя
+    t = text.lower()
+
+    if re.search(r'низк|сидяч|low|sedentary|nizak', t):
+        act_factor = 1.2
+    elif re.search(r'высок|очень актив|high|very active|visok', t):
+        act_factor = 1.55
+    elif re.search(r'умеренн|moderate|medium|srednj', t):
+        act_factor = 1.35
+
+    # Пол пока фикс — можно расширить позже
+    sex = "male"
+
     return {
-        "age": int(age_match.group(1)),
-        "height": int(height_match.group(1)),
-        "weight": float(weight_match.group(1)),
-        "goal": float(goal_match.group(1)),
+        "age": age,
+        "height": height,
+        "weight": weight,
+        "goal": goal,
         "sex": sex,
-        "activity_factor": act_factor
+        "activity_factor": act_factor,
     }
 
+
+def extract_kcal_from_text(text):
+    """
+    Пользователь может просто написать число в конце:
+    '... 420' -> считаем 420 ккал.
+    Или '... 420 ккал', '420 kcal', '420 kk', '420 кк'.
+
+    Берём ПОСЛЕДНЕЕ число в сообщении.
+    Это работает, если писать калории в конце.
+    """
+    nums = re.findall(r'(\d+)\s*(?:ккал|kcal|кк|kk)?', text, re.IGNORECASE)
+    if not nums:
+        return None
+    return float(nums[-1])
+
+
 def _extract_json_block(text: str):
-    import re
+    """Достаём первый {...} из ответа модели."""
     t = text.strip()
-    # убираем ```json ... ```
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.IGNORECASE)
-    # берём первый {...}
     start, end = t.find("{"), t.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return t[start:end+1]
+        return t[start:end + 1]
     return None
+
 
 def ask_ai_for_meal(text_description):
     """
-    Просим модель оценить калории и БЖУ.
-    Возвращаем dict: {"kcal": float, "protein_g": float, "fat_g": float, "carbs_g": float}
-    или None, если не вышло.
+    Запрос к модели через Hugging Face Router.
+    Модель понимает RU / EN / SR.
+    Возвращает dict с kcal и БЖУ или None.
     """
-    if not AI_ENDPOINT:
-        print("AI_ENDPOINT not set")
+    if not AI_ENDPOINT or not AI_KEY:
+        print("AI not configured")
         return None
 
-    prompt = (
-        "Ты нутрициолог. Пользователь описывает приём пищи.\n"
-        "Оцени общие калории и БЖУ. Верни ТОЛЬКО JSON строго такого вида:\n"
+    system_prompt = (
+        "You are a nutritionist assistant. "
+        "The user describes a meal in Russian, English or Serbian. "
+        "Estimate total calories and macros (protein, fat, carbs).\n"
+        "Respond ONLY with JSON in this exact format:\n"
         "{"
-        "\"kcal\": <число>, "
-        "\"protein_g\": <число>, "
-        "\"fat_g\": <число>, "
-        "\"carbs_g\": <число>"
-        "}\n\n"
-        f"Описание: {text_description}\n"
-        "Не добавляй ничего вне JSON."
+        "\"kcal\": <number>, "
+        "\"protein_g\": <number>, "
+        "\"fat_g\": <number>, "
+        "\"carbs_g\": <number>"
+        "}\n"
+        "No extra text before or after JSON."
     )
+
+    user_prompt = f"Meal description: {text_description}"
 
     headers = {
         "Authorization": f"Bearer {AI_KEY}",
         "Content-Type": "application/json",
     }
+
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 200,
-            "temperature": 0.1,
-            "return_full_text": False
-        }
+        "model": "meta-llama/Llama-3.1-8B-Instruct",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": 256,
+        "temperature": 0.1,
     }
 
     try:
         resp = requests.post(AI_ENDPOINT, headers=headers, json=payload, timeout=25)
         print("AI status:", resp.status_code)
-        print("AI raw:", resp.text[:400])  # лог сырого ответа
+        print("AI raw:", resp.text[:400])
 
         if resp.status_code != 200:
             return None
 
         data = resp.json()
-        # HF обычно возвращает список с generated_text
-        if isinstance(data, list) and data:
-            generated = data[0].get("generated_text", "")
-        elif isinstance(data, dict) and "generated_text" in data:
-            generated = data.get("generated_text", "")
-        else:
-            generated = str(data)
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
 
-        js = _extract_json_block(generated)
+        js = _extract_json_block(content)
         if not js:
             return None
 
         result = json.loads(js)
+
         return {
             "kcal": float(result.get("kcal", 0) or 0),
             "protein_g": float(result.get("protein_g", 0) or 0),
             "fat_g": float(result.get("fat_g", 0) or 0),
             "carbs_g": float(result.get("carbs_g", 0) or 0),
         }
-    except Exception as e:
-        print("AI PARSE ERROR:", e)
-        return None
-
-
-    
-    if not AI_ENDPOINT:
-        # У нас пока нет AI, fallback на None.
-        return None
-
-    prompt = (
-        "Ты нутрициолог. Пользователь описывает приём пищи.\n"
-        "Твоя задача — очень грубо и практично оценить калории и БЖУ.\n\n"
-        "Важно:\n"
-        "- Верни ТОЛЬКО JSON без текста вокруг.\n"
-        "- Структура строго такая:\n"
-        "{"
-        "\"kcal\": <число>, "
-        "\"protein_g\": <число>, "
-        "\"fat_g\": <число>, "
-        "\"carbs_g\": <число>"
-        "}\n\n"
-        f"Описание еды: {text_description}\n"
-    )
-
-    headers = {
-        "Content-Type": "application/json",
-    }
-    # Если твой AI сервис требует ключ:
-    if AI_KEY:
-        headers["Authorization"] = f"Bearer {AI_KEY}"
-
-    payload = {
-        "prompt": prompt,
-        # В реальном провайдере могут нужны другие поля (model, max_tokens и т.д.).
-        # Мы потом адаптируем под конкретный API.
-    }
-
-    try:
-        resp = requests.post(AI_ENDPOINT, headers=headers, data=json.dumps(payload), timeout=10)
-        data = resp.text.strip()
-
-        # Попытаемся разобрать ответ как JSON напрямую
-        result = json.loads(data)
-
-        # Ожидаемые ключи
-        kcal = float(result.get("kcal", 0))
-        p = float(result.get("protein_g", 0))
-        f = float(result.get("fat_g", 0))
-        c = float(result.get("carbs_g", 0))
-
-        return {
-            "kcal": kcal,
-            "protein_g": p,
-            "fat_g": f,
-            "carbs_g": c,
-        }
 
     except Exception as e:
         print("AI PARSE ERROR:", e)
         return None
 
-def extract_kcal_from_text(text):
-    """
-    Если юзер сам указал калории '420 ккал', просто возьми их.
-    Это экономит запрос к ИИ.
-    """
-    kcal_numbers = re.findall(r'(\d+)\s*ккал', text, re.IGNORECASE)
-    if kcal_numbers:
-        return float(kcal_numbers[0])
-    return None
 
 def add_meal_and_get_status(user_id, text):
     """
-    1. Пытаемся понять калории из текста напрямую ('420 ккал').
-    2. Если не нашли — спрашиваем ИИ.
-    3. Обновляем дневник.
-    4. Формируем ответ пользователю.
+    Логика приёма пищи:
+    - пробуем забрать число ккал из текста (последнее число);
+    - если его нет — спрашиваем ИИ;
+    - обновляем дневник, считаем остаток.
     """
     d = ensure_diary(user_id)
 
-    # шаг 1: прямое число в тексте
     kcal_direct = extract_kcal_from_text(text)
 
-    ai_data = None
     meal_kcal = 0.0
     meal_p = 0.0
     meal_f = 0.0
     meal_c = 0.0
+    ai_data = None
 
     if kcal_direct is not None:
         meal_kcal = kcal_direct
     else:
-        # шаг 2: спросим ИИ
         ai_data = ask_ai_for_meal(text)
         if ai_data:
             meal_kcal = ai_data["kcal"]
             meal_p = ai_data["protein_g"]
             meal_f = ai_data["fat_g"]
             meal_c = ai_data["carbs_g"]
-        else:
-            # если ИИ недоступен, считаем 0 (но сообщим)
-            meal_kcal = 0.0
 
-    # сохранить приём
+    # записываем приём
+    d = ensure_diary(user_id)
     meal_index = len(d["meals"]) + 1
     d["meals"].append({
         "index": meal_index,
@@ -271,19 +269,17 @@ def add_meal_and_get_status(user_id, text):
         "carbs_g": meal_c,
     })
 
-    # обновить дневные суммы
     d["total_kcal"] += meal_kcal
     d["total_p"] += meal_p
     d["total_f"] += meal_f
     d["total_c"] += meal_c
 
-    # расчёт остатка калорий относительно дефицита
     profile = profiles.get(user_id)
     if profile:
         nums = calc_profile_numbers(profile)
         limit = nums["deficit"]
     else:
-        limit = 2000  # fallback если нет профиля
+        limit = 2000  # запасная цель, если профиль ещё не задан
 
     remaining = round(limit - d["total_kcal"])
 
@@ -292,13 +288,15 @@ def add_meal_and_get_status(user_id, text):
     lines.append(f"Описание: {text}")
     lines.append(f"Калории этого приёма: {meal_kcal:.0f} ккал")
 
-    # показываем БЖУ если они есть
     if ai_data:
-        lines.append(f"Белки: {meal_p:.1f} г, Жиры: {meal_f:.1f} г, Углеводы: {meal_c:.1f} г")
+        lines.append(
+            f"БЖУ этого приёма: Б {meal_p:.1f} г / Ж {meal_f:.1f} г / У {meal_c:.1f} г"
+        )
 
     lines.append("")
     lines.append(f"Съедено за день: {d['total_kcal']:.0f} ккал")
-    if ai_data:
+
+    if d["total_p"] or d["total_f"] or d["total_c"]:
         lines.append(
             f"БЖУ за день: Б {d['total_p']:.1f} г / Ж {d['total_f']:.1f} г / У {d['total_c']:.1f} г"
         )
@@ -307,55 +305,88 @@ def add_meal_and_get_status(user_id, text):
     lines.append(f"Осталось до лимита: {remaining} ккал")
 
     if remaining < 0:
-        lines.append("⚠ Превышение лимита дефицита.")
+        lines.append("⚠ Лимит дефицита превышен.")
 
-    if meal_kcal == 0.0 and not ai_data and kcal_direct is None:
+    if meal_kcal == 0 and not ai_data and kcal_direct is None:
         lines.append("")
-        lines.append("ℹ Не получилось оценить калории автоматически. "
-                     "Можно написать примерно так: '... всего 450 ккал'.")
+        lines.append("ℹ Не удалось оценить калории автоматически. "
+                     "Можно дописать в конце сообщения просто число, например: '... 420'.")
 
     return "\n".join(lines)
+
 
 def build_status_message(user_id):
     profile = profiles.get(user_id)
     d = ensure_diary(user_id)
 
     if not profile:
-        return "Профиль не задан. Отправь свои данные (возраст, рост, вес, цель...)."
+        return profile_help_text()
 
     nums = calc_profile_numbers(profile)
     limit = nums["deficit"]
     remaining = round(limit - d["total_kcal"])
 
     msg = []
-    msg.append("Твой статус на сегодня:")
+    msg.append("Статус на сегодня:")
     msg.append(f"- Поддержание веса: {nums['maintenance']} ккал/день")
     msg.append(f"- Дефицит (~20%): {nums['deficit']} ккал/день")
     msg.append(f"- Съедено сегодня: {d['total_kcal']:.0f} ккал")
     msg.append(f"- Осталось до лимита дефицита: {remaining} ккал")
 
-    # Если мы уже накопили БЖУ за день — покажем
-    if d["total_p"] > 0 or d["total_f"] > 0 or d["total_c"] > 0:
+    if d["total_p"] or d["total_f"] or d["total_c"]:
         msg.append(
             f"- БЖУ за день: Б {d['total_p']:.1f} г / Ж {d['total_f']:.1f} г / У {d['total_c']:.1f} г"
         )
 
     if remaining < 0:
-        msg.append("⚠ Ты превысил лимит дефицита сегодня.")
+        msg.append("⚠ Лимит превышен, аккуратнее с перекусами 😈")
 
     return "\n".join(msg)
 
+
+def profile_help_text():
+    """Шаблон профиля (RU/EN/SR), который юзер копирует и заполняет цифрами."""
+    return (
+        "Заполни профиль, просто вставив цифры в шаблон и отправив его мне.\n\n"
+        "РУССКИЙ 🇷🇺 (скопируй, подставь свои числа):\n"
+        "Возраст: 34\n"
+        "Рост: 181\n"
+        "Вес: 86\n"
+        "Цель: 84\n"
+        "Активность: высокая  (варианты: низкая / средняя / высокая)\n\n"
+        "ENGLISH 🇬🇧:\n"
+        "Age: 34\n"
+        "Height: 181\n"
+        "Weight: 86\n"
+        "Goal: 84\n"
+        "Activity: high  (options: low / moderate / high)\n\n"
+        "SRPSKI 🇷🇸:\n"
+        "Godine: 34\n"
+        "Visina: 181\n"
+        "Tezina: 86\n"
+        "Cilj: 84\n"
+        "Aktivnost: visoka  (nizka / srednja / visoka)\n"
+    )
+
+
 def handle_user_message(user_id, text):
-    # Обновление профиля пользователя
-    if re.search(r'возраст', text, re.IGNORECASE) and \
-       re.search(r'рост', text, re.IGNORECASE) and \
-       re.search(r'вес', text, re.IGNORECASE):
+    """
+    Основная логика:
+    - если текст похож на профиль -> сохраняем профиль;
+    - если /status или статус -> сводка;
+    - иначе -> считаем как приём пищи.
+    """
+
+    # 1. Профиль (мы ищем любые из ключевых слов)
+    if re.search(r'(возраст|age|godine|godina)', text, re.IGNORECASE) and \
+       re.search(r'(рост|height|visina)', text, re.IGNORECASE) and \
+       re.search(r'(вес|weight|težina|tezina)', text, re.IGNORECASE):
 
         prof = parse_profile_text(text)
         if prof is None:
             return (
-                "Не понял данные. Пришли в формате:\n"
-                "Возраст 34, рост 181, вес 95, цель 90, активность средняя."
+                "Не понял профиль 😅\n\n"
+                + profile_help_text()
             )
 
         profiles[user_id] = prof
@@ -367,23 +398,26 @@ def handle_user_message(user_id, text):
             f"Цель: {prof['goal']} кг\n"
             f"Активность: коэффициент {prof['activity_factor']}\n\n"
             f"Поддержание веса: {nums['maintenance']} ккал/день\n"
-            f"Дефицит (~20%): {nums['deficit']} ккал/день\n"
-            "Теперь просто присылай еду, а я буду считать приёмы пищи."
+            f"Дефицит (~20%): {nums['deficit']} ккал/день\n\n"
+            "Теперь просто присылай, что ел/ела (на русском, английском или сербском), "
+            "я буду считать приёмы пищи и остаток калорий."
         )
 
-    # Запрос статуса
-    if text.strip().lower() in ["/status", "статус", "остаток", "сколько осталось"]:
+    # 2. Статус
+    low = text.strip().lower()
+    if low in ["/status", "статус", "остаток", "status", "stanje", "koliko je ostalo"]:
         return build_status_message(user_id)
 
-    # Любой другой текст считаем едой
-    meal_report = add_meal_and_get_status(user_id, text)
-    return meal_report
+    # 3. Всё остальное считаем едой
+    return add_meal_and_get_status(user_id, text)
 
-# ====== TELEGRAM HANDLERS ======
+
+# ============= FLASK / TELEGRAM =============
 
 @app.route("/", methods=["GET"])
 def health():
     return "AI Calories Bot is running!"
+
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def telegram_webhook():
@@ -401,13 +435,12 @@ def telegram_webhook():
 
     if user_text.strip() == "/start":
         reply = (
-            "Привет 👋 Я бот учёта калорий.\n\n"
-            "1) Пришли свои данные (возраст, рост, вес, цель, активность)\n"
-            "   Пример:\n"
-            "   Возраст 34, рост 181, вес 95, цель 90, активность средняя.\n\n"
-            "2) Потом просто пиши что ты ел в свободной форме — "
-            "я сам оценю калории и БЖУ.\n\n"
-            "3) Напиши /status чтобы увидеть остаток калорий на день."
+            "Привет 👋 Я AI-бот учёта калорий.\n\n"
+            "1️⃣ Сначала заполни профиль. Я дам шаблон, просто вставь свои цифры:\n\n"
+            + profile_help_text() +
+            "\n2️⃣ Потом просто пиши, что ты ел/ела (RU / EN / SR). "
+            "Если знаешь калории приёма, можешь в конце дописать число, например: '... 420'.\n\n"
+            "3️⃣ В любой момент напиши /status чтобы увидеть сводку дня."
         )
     else:
         reply = handle_user_message(chat_id, user_text)
@@ -415,12 +448,17 @@ def telegram_webhook():
     send_text_message(chat_id, reply)
     return jsonify({"ok": True})
 
+
 def send_text_message(chat_id, text):
-    requests.post(
-        f"{BOT_API}/sendMessage",
-        json={"chat_id": chat_id, "text": text},
-        timeout=10
-    )
+    try:
+        requests.post(
+            f"{BOT_API}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10
+        )
+    except Exception as e:
+        print("TELEGRAM SEND ERROR:", e)
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
