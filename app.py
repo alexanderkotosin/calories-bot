@@ -81,25 +81,87 @@ def parse_profile_text(text):
         "activity_factor": act_factor
     }
 
+def _extract_json_block(text: str):
+    import re
+    t = text.strip()
+    # убираем ```json ... ```
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.IGNORECASE)
+    # берём первый {...}
+    start, end = t.find("{"), t.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return t[start:end+1]
+    return None
+
 def ask_ai_for_meal(text_description):
     """
-    Отправляем описание еды в ИИ и просим оценить:
-    - общие калории
-    - белки граммы
-    - жиры граммы
-    - углеводы граммы
+    Просим модель оценить калории и БЖУ.
+    Возвращаем dict: {"kcal": float, "protein_g": float, "fat_g": float, "carbs_g": float}
+    или None, если не вышло.
+    """
+    if not AI_ENDPOINT:
+        print("AI_ENDPOINT not set")
+        return None
 
-    Возвращаем dict:
-    {
-      "kcal": float,
-      "protein_g": float,
-      "fat_g": float,
-      "carbs_g": float
+    prompt = (
+        "Ты нутрициолог. Пользователь описывает приём пищи.\n"
+        "Оцени общие калории и БЖУ. Верни ТОЛЬКО JSON строго такого вида:\n"
+        "{"
+        "\"kcal\": <число>, "
+        "\"protein_g\": <число>, "
+        "\"fat_g\": <число>, "
+        "\"carbs_g\": <число>"
+        "}\n\n"
+        f"Описание: {text_description}\n"
+        "Не добавляй ничего вне JSON."
+    )
+
+    headers = {
+        "Authorization": f"Bearer {AI_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 200,
+            "temperature": 0.1,
+            "return_full_text": False
+        }
     }
 
-    Если что-то пошло не так — вернём None.
-    """
+    try:
+        resp = requests.post(AI_ENDPOINT, headers=headers, json=payload, timeout=25)
+        print("AI status:", resp.status_code)
+        print("AI raw:", resp.text[:400])  # лог сырого ответа
 
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        # HF обычно возвращает список с generated_text
+        if isinstance(data, list) and data:
+            generated = data[0].get("generated_text", "")
+        elif isinstance(data, dict) and "generated_text" in data:
+            generated = data.get("generated_text", "")
+        else:
+            generated = str(data)
+
+        js = _extract_json_block(generated)
+        if not js:
+            return None
+
+        result = json.loads(js)
+        return {
+            "kcal": float(result.get("kcal", 0) or 0),
+            "protein_g": float(result.get("protein_g", 0) or 0),
+            "fat_g": float(result.get("fat_g", 0) or 0),
+            "carbs_g": float(result.get("carbs_g", 0) or 0),
+        }
+    except Exception as e:
+        print("AI PARSE ERROR:", e)
+        return None
+
+
+    
     if not AI_ENDPOINT:
         # У нас пока нет AI, fallback на None.
         return None
