@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# === Конфигурация из переменных окружения ===
+# === Конфиг из окружения ===
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 BOT_API = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -15,19 +15,24 @@ AI_ENDPOINT = os.getenv("AI_ENDPOINT", "")
 AI_KEY = os.getenv("AI_KEY", "")
 
 # === Память в рантайме ===
-profiles = {}   # profiles[user_id] = {...}
-diary = {}      # diary[user_id] = {...}
-user_lang = {}  # user_lang[user_id] = "ru"|"en"|"sr"
+profiles = {}     # profiles[user_id] = {...}
+diary = {}        # diary[user_id] = {...}
+user_lang = {}    # user_lang[user_id] = 'ru' | 'en' | 'sr'
+user_state = {}   # user_state[user_id] = 'lang_choice' | 'idle'
 
 
 # ========= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 def today_key():
+    # можно потом заменить на локальное время
     return time.strftime("%Y%m%d", time.gmtime())
 
 
 def ensure_diary(user_id):
-    """Инициализируем дневник на сегодня, сбрасываем при смене дня."""
+    """
+    Инициализация дневника на сегодня.
+    Профиль не трогаем, только дневной учёт.
+    """
     dkey = today_key()
     if user_id not in diary or diary[user_id]["day"] != dkey:
         diary[user_id] = {
@@ -42,41 +47,19 @@ def ensure_diary(user_id):
 
 
 def get_lang(user_id):
-    return user_lang.get(user_id, "ru")
-
-
-def set_lang_from_choice(user_id, text):
-    """Пробуем выбрать язык по вводу: 1/2/3, ru/en/sr и т.п."""
-    t = text.strip().lower()
-    if t in ["1", "ru", "rus", "russian", "рус", "русский"]:
-        user_lang[user_id] = "ru"
-        return "ru"
-    if t in ["2", "en", "eng", "english"]:
-        user_lang[user_id] = "en"
-        return "en"
-    if t in ["3", "sr", "srb", "srpski", "serbian", "српски", "сербский"]:
-        user_lang[user_id] = "sr"
-        return "sr"
-    return None
-
-
-def language_choice_text():
-    return (
-        "Choose your language / Выбери язык / Izaberi jezik:\n\n"
-        "1️⃣ Русский 🇷🇺\n"
-        "2️⃣ English 🇬🇧\n"
-        "3️⃣ Srpski 🇷🇸\n\n"
-        "Просто отправь цифру 1, 2 или 3."
-    )
+    # по умолчанию – английский, пока не выбрали
+    return user_lang.get(user_id, "en")
 
 
 def calc_profile_numbers(profile):
+    """Расчёт BMR, калорий на поддержание и дефицит ~20%."""
     age = profile["age"]
     weight = profile["weight"]
     height = profile["height"]
     sex = profile["sex"]
     activity_factor = profile["activity_factor"]
 
+    # Миффлин — Сан Жеор
     if sex == "male":
         bmr = 10 * weight + 6.25 * height - 5 * age + 5
     else:
@@ -94,13 +77,8 @@ def calc_profile_numbers(profile):
 
 def parse_profile_text(text):
     """
-    Парсим профиль на RU / EN / SR.
-    Формат:
-    Возраст/Age/Godine: 34
-    Рост/Height/Visina: 181
-    Вес/Weight/Tezina: 86
-    Цель/Goal/Cilj: 84
-    Активность/Activity/Aktivnost: ...
+    Парсим профиль RU / EN / SR.
+    Формат: возраст/age/godine, рост/height/visina, вес/weight/težina, цель/goal/cilj, активность.
     """
 
     age_match = re.search(
@@ -128,7 +106,8 @@ def parse_profile_text(text):
     weight = float(weight_match.group(2))
     goal = float(goal_match.group(2))
 
-    act_factor = 1.35  # средняя по умолчанию
+    # Активность: RU / EN / SR
+    act_factor = 1.35  # средняя
     t = text.lower()
 
     if re.search(r'низк|сидяч|low|sedentary|nizak', t):
@@ -138,6 +117,7 @@ def parse_profile_text(text):
     elif re.search(r'умеренн|moderate|medium|srednj', t):
         act_factor = 1.35
 
+    # пока фиксируем пол
     sex = "male"
 
     return {
@@ -152,23 +132,19 @@ def parse_profile_text(text):
 
 def extract_kcal_from_text(text):
     """
-    1) Если есть '420 ккал/kcal/кк/kk' — считаем это калориями.
-    2) Если ВСЁ сообщение — одно число '420' — это калории.
-    3) Иначе (например '2 яйца', '2 бургера') — возвращаем None, и дальше работает ИИ.
+    Пользователь может просто написать число в конце:
+    '... 420' -> считаем 420 ккал.
+    Или '420 ккал', '420 kcal', '420 кк', '420 kk'.
+    Берём ПОСЛЕДНЕЕ число.
     """
-    text = text.strip()
-
-    m = re.search(r'(\d+)\s*(ккал|kcal|кк|kk)', text, re.IGNORECASE)
-    if m:
-        return float(m.group(1))
-
-    if re.fullmatch(r'\d+', text):
-        return float(text)
-
-    return None
+    nums = re.findall(r'(\d+)\s*(?:ккал|kcal|кк|kk)?', text, re.IGNORECASE)
+    if not nums:
+        return None
+    return float(nums[-1])
 
 
 def _extract_json_block(text: str):
+    """Достаём первый {...} из ответа модели."""
     t = text.strip()
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.IGNORECASE)
     start, end = t.find("{"), t.rfind("}")
@@ -178,7 +154,11 @@ def _extract_json_block(text: str):
 
 
 def ask_ai_for_meal(text_description):
-    """Запрашиваем у Llama-3.1 калории и БЖУ по описанию еды."""
+    """
+    Запрос к модели через Hugging Face Router.
+    Модель понимает RU / EN / SR.
+    Возвращает dict с kcal и БЖУ или None.
+    """
     if not AI_ENDPOINT or not AI_KEY:
         print("AI not configured")
         return None
@@ -247,9 +227,180 @@ def ask_ai_for_meal(text_description):
         return None
 
 
-def add_meal_and_get_status(user_id, text):
+# ========= ТЕКСТЫ ДЛЯ 3 ЯЗЫКОВ ==========
+
+def language_choice_text():
+    # показываем всегда на трёх, до выбора языка
+    return (
+        "Choose your language / Выбери язык / Izaberi jezik:\n\n"
+        "1️⃣ English 🇬🇧\n"
+        "2️⃣ Русский 🇷🇺\n"
+        "3️⃣ Srpski 🇷🇸\n\n"
+        "Send 1, 2 or 3.\n"
+        "Отправь 1, 2 или 3.\n"
+        "Pošalji 1, 2 ili 3."
+    )
+
+
+def profile_template(lang: str):
+    if lang == "ru":
+        return (
+            "Вот шаблон профиля. Скопируй его, подставь свои цифры и пришли одним сообщением:\n\n"
+            "Возраст: 34\n"
+            "Рост: 181\n"
+            "Вес: 86\n"
+            "Цель: 84\n"
+            "Активность: средняя  (варианты: низкая / средняя / высокая)\n"
+        )
+    if lang == "sr":
+        return (
+            "Evo šablona profila. Kopiraj ga, ubaci svoje brojeve i pošalji u jednoj poruci:\n\n"
+            "Godine: 34\n"
+            "Visina: 181\n"
+            "Težina: 86\n"
+            "Cilj: 84\n"
+            "Aktivnost: srednja  (opcije: niska / srednja / visoka)\n"
+        )
+    # default en
+    return (
+        "Here is your profile template. Copy it, insert your numbers and send as one message:\n\n"
+        "Age: 34\n"
+        "Height: 181\n"
+        "Weight: 86\n"
+        "Goal: 84\n"
+        "Activity: moderate  (options: low / moderate / high)\n"
+    )
+
+
+def after_language_selected_intro(lang: str):
+    if lang == "ru":
+        return (
+            "Я запомнил язык: русский 🇷🇺\n\n"
+            "Сейчас вышлю шаблон профиля. Твоя задача:\n"
+            "1) Скопировать шаблон.\n"
+            "2) Подставить свои цифры.\n"
+            "3) Отправить его мне одним сообщением.\n\n"
+            "После этого я посчитаю твою норму калорий и дефицит."
+        )
+    if lang == "sr":
+        return (
+            "Zapamtio sam jezik: srpski 🇷🇸\n\n"
+            "Sada šaljem šablon profila. Tvoj zadatak:\n"
+            "1) Kopiraj šablon.\n"
+            "2) Ubaci svoje brojeve.\n"
+            "3) Pošalji mi ga kao jednu poruku.\n\n"
+            "Posle toga ću izračunati tvoju dnevnu normu kalorija i deficit."
+        )
+    # en
+    return (
+        "Got it, language set to English 🇬🇧\n\n"
+        "Now I’ll send you a profile template. Your steps:\n"
+        "1) Copy the template.\n"
+        "2) Insert your numbers.\n"
+        "3) Send it back as a single message.\n\n"
+        "After that I’ll calculate your daily calories and deficit."
+    )
+
+
+def profile_parse_error_text(lang: str):
+    if lang == "ru":
+        return (
+            "Не смог разобрать профиль 😅\n\n"
+            "Сделай так:\n"
+            "1) Возьми шаблон.\n"
+            "2) Просто подставь свои цифры вместо примеров.\n"
+            "3) Отправь одним сообщением.\n\n"
+            + profile_template("ru")
+        )
+    if lang == "sr":
+        return (
+            "Nisam uspeo da pročitam profil 😅\n\n"
+            "Uradi ovako:\n"
+            "1) Uzmi šablon.\n"
+            "2) Ubaci svoje brojeve umesto primera.\n"
+            "3) Pošalji kao jednu poruku.\n\n"
+            + profile_template("sr")
+        )
+    # en
+    return (
+        "I couldn’t read your profile 😅\n\n"
+        "Do this:\n"
+        "1) Take the template.\n"
+        "2) Replace the numbers with your own.\n"
+        "3) Send it as one message.\n\n"
+        + profile_template("en")
+    )
+
+
+def off_topic_text(lang: str):
+    if lang == "ru":
+        return (
+            "Кажется, это не очень похоже на приём пищи 😅\n\n"
+            "Я бот по учёту калорий. Напиши, пожалуйста, что ты ел/ела "
+            "(пример: 'куриная грудка 150г, рис 100г, салат'), "
+            "или вызови /status, чтобы увидеть сводку дня."
+        )
+    if lang == "sr":
+        return (
+            "Izgleda da ova poruka nije baš obrok 😅\n\n"
+            "Ja sam bot za kalorije. Napiši šta si jeo/la "
+            "(primer: 'pileća prsa 150g, pirinač 100g, salata'), "
+            "ili pošalji /status za današnji rezime."
+        )
+    # en
+    return (
+        "This doesn’t really look like a meal 😅\n\n"
+        "I’m a calorie-tracking bot. Please write what you ate "
+        "(e.g. 'chicken breast 150g, rice 100g, salad'), "
+        "or send /status to see today’s summary."
+    )
+
+
+def help_text(lang: str):
+    if lang == "ru":
+        return (
+            "📝 Как со мной работать:\n\n"
+            "1️⃣ Сначала заполни профиль по шаблону.\n"
+            "2️⃣ Потом просто присылай, что ты ешь.\n"
+            "3️⃣ Я считаю калории, БЖУ и остаток на день.\n\n"
+            "Команды:\n"
+            "/status — сводка за сегодня\n"
+            "/lang — сменить язык\n"
+            "/start — начать заново (но профиль не стираю, если сам не перепишешь)\n"
+        )
+    if lang == "sr":
+        return (
+            "📝 Kako da koristiš bota:\n\n"
+            "1️⃣ Prvo popuni profil po šablonu.\n"
+            "2️⃣ Zatim šalji šta jedeš tokom dana.\n"
+            "3️⃣ Ja računam kalorije, makroe i ostatak za dan.\n\n"
+            "Komande:\n"
+            "/status — današnji rezime\n"
+            "/lang — promeni jezik\n"
+            "/start — novi početak (profil ostaje, osim ako ga ne promeniš)\n"
+        )
+    # en
+    return (
+        "📝 How to use this bot:\n\n"
+        "1️⃣ First, fill in your profile using the template.\n"
+        "2️⃣ Then just send what you eat during the day.\n"
+        "3️⃣ I’ll track calories, macros and your daily balance.\n\n"
+        "Commands:\n"
+        "/status — today’s summary\n"
+        "/lang — change language\n"
+        "/start — restart (I keep your profile unless you overwrite it)\n"
+    )
+
+
+# ========= ОСНОВНАЯ ЛОГИКА ПРИЁМА ПИЩИ/СТАТУСА ==========
+
+def add_meal_and_get_status(user_id, text, lang: str):
+    """
+    - пробуем вытащить калории из числа (последнее число в сообщении),
+    - если нет числа -> спрашиваем ИИ,
+    - если ИИ тоже не дал, отвечаем off-topic / не смог оценить.
+    """
     d = ensure_diary(user_id)
-    lang = get_lang(user_id)
 
     kcal_direct = extract_kcal_from_text(text)
 
@@ -269,6 +420,12 @@ def add_meal_and_get_status(user_id, text):
             meal_f = ai_data["fat_g"]
             meal_c = ai_data["carbs_g"]
 
+    # если вообще ноль и ничего не поняли — считаем, что сообщение не по теме
+    if meal_kcal == 0 and ai_data is None and kcal_direct is None:
+        return off_topic_text(lang)
+
+    # записываем приём
+    d = ensure_diary(user_id)
     meal_index = len(d["meals"]) + 1
     d["meals"].append({
         "index": meal_index,
@@ -293,367 +450,208 @@ def add_meal_and_get_status(user_id, text):
 
     remaining = round(limit - d["total_kcal"])
 
-    lines = []
-
-    if lang == "en":
-        lines.append(f"Meal #{meal_index}")
-        lines.append(f"Description: {text}")
-        lines.append(f"Calories in this meal: {meal_kcal:.0f} kcal")
-        if ai_data:
-            lines.append(
-                f"Macros this meal: P {meal_p:.1f} g / F {meal_f:.1f} g / C {meal_c:.1f} g"
-            )
-        lines.append("")
-        lines.append(f"Eaten today: {d['total_kcal']:.0f} kcal")
-        if d["total_p"] or d["total_f"] or d["total_c"]:
-            lines.append(
-                f"Daily macros: P {d['total_p']:.1f} g / F {d['total_f']:.1f} g / C {d['total_c']:.1f} g"
-            )
-        lines.append(f"Daily deficit target: {round(limit)} kcal")
-        lines.append(f"Remaining until limit: {remaining} kcal")
-        if remaining < 0:
-            lines.append("⚠ You exceeded your daily deficit limit.")
-        if meal_kcal == 0 and not ai_data and kcal_direct is None:
-            lines.append("")
-            lines.append("ℹ I couldn't estimate calories automatically. "
-                         "You can add a number at the end, like '... 420'.")
-    elif lang == "sr":
-        lines.append(f"Obrok #{meal_index}")
-        lines.append(f"Opis: {text}")
-        lines.append(f"Kalorije u ovom obroku: {meal_kcal:.0f} kcal")
-        if ai_data:
-            lines.append(
-                f"Makro za ovaj obrok: P {meal_p:.1f} g / M {meal_f:.1f} g / UH {meal_c:.1f} g"
-            )
-        lines.append("")
-        lines.append(f"Pojedeno danas: {d['total_kcal']:.0f} kcal")
-        if d["total_p"] or d["total_f"] or d["total_c"]:
-            lines.append(
-                f"Makro za dan: P {d['total_p']:.1f} g / M {d['total_f']:.1f} g / UH {d['total_c']:.1f} g"
-            )
-        lines.append(f"Cilj za dan (deficit): {round(limit)} kcal")
-        lines.append(f"Preostalo do limita: {remaining} kcal")
-        if remaining < 0:
-            lines.append("⚠ Prešao si dnevni deficit.")
-        if meal_kcal == 0 and not ai_data and kcal_direct is None:
-            lines.append("")
-            lines.append("ℹ Nisam uspeo da procenim kalorije automatski. "
-                         "Možeš dodati broj na kraj, npr: '... 420'.")
-    else:  # ru
-        lines.append(f"Приём пищи №{meal_index}")
-        lines.append(f"Описание: {text}")
-        lines.append(f"Калории этого приёма: {meal_kcal:.0f} ккал")
+    if lang == "ru":
+        lines = [
+            f"Приём пищи №{meal_index}",
+            f"Описание: {text}",
+            f"Калории этого приёма: {meal_kcal:.0f} ккал",
+        ]
         if ai_data:
             lines.append(
                 f"БЖУ этого приёма: Б {meal_p:.1f} г / Ж {meal_f:.1f} г / У {meal_c:.1f} г"
             )
-        lines.append("")
-        lines.append(f"Съедено за день: {d['total_kcal']:.0f} ккал")
+        lines += [
+            "",
+            f"Съедено за день: {d['total_kcal']:.0f} ккал",
+        ]
         if d["total_p"] or d["total_f"] or d["total_c"]:
             lines.append(
                 f"БЖУ за день: Б {d['total_p']:.1f} г / Ж {d['total_f']:.1f} г / У {d['total_c']:.1f} г"
             )
-        lines.append(f"Цель на день (дефицит): {round(limit)} ккал")
-        lines.append(f"Осталось до лимита: {remaining} ккал")
+        lines += [
+            f"Цель на день (дефицит): {round(limit)} ккал",
+            f"Осталось до лимита: {remaining} ккал",
+        ]
         if remaining < 0:
             lines.append("⚠ Лимит дефицита превышен.")
-        if meal_kcal == 0 and not ai_data and kcal_direct is None:
-            lines.append("")
-            lines.append("ℹ Не удалось оценить калории автоматически. "
-                         "Можно дописать в конце сообщения просто число, например: '... 420'.")
+        return "\n".join(lines)
 
+    if lang == "sr":
+        lines = [
+            f"Obrok #{meal_index}",
+            f"Opis: {text}",
+            f"Kalorije ovog obroka: {meal_kcal:.0f} kcal",
+        ]
+        if ai_data:
+            lines.append(
+                f"Makroi ovog obroka: P {meal_p:.1f} g / M {meal_f:.1f} g / UH {meal_c:.1f} g"
+            )
+        lines += [
+            "",
+            f"Pojedeno danas: {d['total_kcal']:.0f} kcal",
+        ]
+        if d["total_p"] or d["total_f"] or d["total_c"]:
+            lines.append(
+                f"Makroi danas: P {d['total_p']:.1f} g / M {d['total_f']:.1f} g / UH {d['total_c']:.1f} g"
+            )
+        lines += [
+            f"Cilj za dan (deficit): {round(limit)} kcal",
+            f"Preostalo do limita: {remaining} kcal",
+        ]
+        if remaining < 0:
+            lines.append("⚠ Premašio/la si dnevni deficit.")
+        return "\n".join(lines)
+
+    # en
+    lines = [
+        f"Meal #{meal_index}",
+        f"Description: {text}",
+        f"Calories in this meal: {meal_kcal:.0f} kcal",
+    ]
+    if ai_data:
+        lines.append(
+            f"Macros for this meal: P {meal_p:.1f} g / F {meal_f:.1f} g / C {meal_c:.1f} g"
+        )
+    lines += [
+        "",
+        f"Total eaten today: {d['total_kcal']:.0f} kcal",
+    ]
+    if d["total_p"] or d["total_f"] or d["total_c"]:
+        lines.append(
+            f"Macros today: P {d['total_p']:.1f} g / F {d['total_f']:.1f} g / C {d['total_c']:.1f} g"
+        )
+    lines += [
+        f"Daily target (deficit): {round(limit)} kcal",
+        f"Remaining for today: {remaining} kcal",
+    ]
+    if remaining < 0:
+        lines.append("⚠ You’ve exceeded your daily deficit.")
     return "\n".join(lines)
 
 
-def profile_template_text(lang):
-    if lang == "en":
-        return (
-            "PROFILE FORM 🇬🇧 (copy, replace numbers, send):\n"
-            "Age: 34\n"
-            "Height: 181\n"
-            "Weight: 86\n"
-            "Goal: 84\n"
-            "Activity: high  (options: low / moderate / high)\n"
-        )
-    if lang == "sr":
-        return (
-            "FORMULAR PROFILA 🇷🇸 (kopiraj, ubaci svoje brojeve i pošalji):\n"
-            "Godine: 34\n"
-            "Visina: 181\n"
-            "Tezina: 86\n"
-            "Cilj: 84\n"
-            "Aktivnost: visoka  (nizka / srednja / visoka)\n"
-        )
-    return (
-        "ФОРМА ПРОФИЛЯ 🇷🇺 (скопируй, подставь свои числа и отправь):\n"
-        "Возраст: 34\n"
-        "Рост: 181\n"
-        "Вес: 86\n"
-        "Цель: 84\n"
-        "Активность: высокая  (варианты: низкая / средняя / высокая)\n"
-    )
-
-
-def help_text(lang):
-    if lang == "en":
-        return (
-            "HOW TO USE THE BOT 🤖\n\n"
-            "1️⃣ First, set up your profile using the form (age, height, weight, goal, activity).\n"
-            "   Activity:\n"
-            "   • low  – you sit most of the day\n"
-            "   • moderate – you walk a bit, some light activity\n"
-            "   • high – you move a lot, workouts or active job\n\n"
-            "2️⃣ Then just send what you eat in free text:\n"
-            "   '2 eggs and toast', 'chicken breast 150g, rice 100g, salad'.\n"
-            "   I will estimate calories and macros with AI.\n\n"
-            "3️⃣ If you already know calories for the meal, just add a number at the end:\n"
-            "   'burger and fries – 850' ⇒ I take 850 kcal.\n\n"
-            "4️⃣ /status – shows daily summary and how many calories are left.\n\n"
-            "Small disclaimer: this is an approximate coach, not a medical device.\n"
-            "A bit of inaccuracy is okay – consistency beats perfection 😉"
-        )
-    if lang == "sr":
-        return (
-            "KAKO DA KORISTIŠ BOTA 🤖\n\n"
-            "1️⃣ Prvo podesi profil pomoću formulara (godine, visina, težina, cilj, aktivnost).\n"
-            "   Aktivnost:\n"
-            "   • nizka  – uglavnom sediš\n"
-            "   • srednja – malo hodaš, malo pokreta\n"
-            "   • visoka – dosta se krećeš, trening ili aktivan posao\n\n"
-            "2️⃣ Posle toga samo šalji šta si jeo/la:\n"
-            "   '2 jaja i hleb', 'piletina 150g, pirinač 100g, salata'.\n"
-            "   Ja procenjujem kalorije i makroe uz pomoć AI.\n\n"
-            "3️⃣ Ako već znaš kalorije, možeš na kraj poruke staviti broj:\n"
-            "   'burger i pomfrit – 850' ⇒ uzimam 850 kcal.\n\n"
-            "4️⃣ /status – pokazuje pregled dana i koliko kalorija je ostalo.\n\n"
-            "Napomena: bot je približan coach, nije medicinski uređaj.\n"
-            "Mala greška je okej – bitna je doslednost 😉"
-        )
-    return (
-        "КАК ПОЛЬЗОВАТЬСЯ БОТОМ 🤖\n\n"
-        "1️⃣ Сначала настрой профиль через форму (возраст, рост, вес, цель, активность).\n"
-        "   Активность:\n"
-        "   • низкая  — сидячая работа, минимум движения\n"
-        "   • средняя — ходьба, лёгкая активность в течение дня\n"
-        "   • высокая — много движения, тренировки или физический труд\n\n"
-        "2️⃣ Дальше просто пиши, что ты ел/ела в свободной форме:\n"
-        "   'яичница 2 яйца и хлеб', 'курица 150г, рис 100г, салат'.\n"
-        "   Я оценю калории и БЖУ с помощью ИИ.\n\n"
-        "3️⃣ Если ты сам знаешь калорийность приёма, в конце сообщения можно указать число:\n"
-        "   'шаурма и кола — 850' ⇒ я приму 850 ккал.\n\n"
-        "4️⃣ /status — покажет сводку за день и сколько калорий осталось.\n\n"
-        "Важно: бот даёт примерную оценку, это не медицинский прибор.\n"
-        "Чуть-чуть погрешности — это нормально, главное — регулярность 😉"
-    )
-
-
-def build_status_message(user_id):
-    lang = get_lang(user_id)
+def build_status_message(user_id, lang: str):
     profile = profiles.get(user_id)
     d = ensure_diary(user_id)
 
     if not profile:
-        # если профиля нет — просто вернуть форму
-        return help_text(lang) + "\n\n" + profile_template_text(lang)
+        return profile_parse_error_text(lang)
 
     nums = calc_profile_numbers(profile)
     limit = nums["deficit"]
     remaining = round(limit - d["total_kcal"])
 
-    if lang == "en":
-        msg = []
-        msg.append("Today status:")
-        msg.append(f"- Maintenance: {nums['maintenance']} kcal/day")
-        msg.append(f"- Deficit (~20%): {nums['deficit']} kcal/day")
-        msg.append(f"- Eaten today: {d['total_kcal']:.0f} kcal")
-        msg.append(f"- Remaining until deficit limit: {remaining} kcal")
+    if lang == "ru":
+        msg = [
+            "Статус на сегодня:",
+            f"- Поддержание веса: {nums['maintenance']} ккал/день",
+            f"- Дефицит (~20%): {nums['deficit']} ккал/день",
+            f"- Съедено сегодня: {d['total_kcal']:.0f} ккал",
+            f"- Осталось до лимита дефицита: {remaining} ккал",
+        ]
         if d["total_p"] or d["total_f"] or d["total_c"]:
             msg.append(
-                f"- Daily macros: P {d['total_p']:.1f} g / F {d['total_f']:.1f} g / C {d['total_c']:.1f} g"
+                f"- БЖУ за день: Б {d['total_p']:.1f} г / Ж {d['total_f']:.1f} г / У {d['total_c']:.1f} г"
             )
         if remaining < 0:
-            msg.append("⚠ You exceeded today's deficit.")
+            msg.append("⚠ Лимит превышен, аккуратнее с перекусами 😈")
         return "\n".join(msg)
 
     if lang == "sr":
-        msg = []
-        msg.append("Status za danas:")
-        msg.append(f"- Održavanje: {nums['maintenance']} kcal/dan")
-        msg.append(f"- Deficit (~20%): {nums['deficit']} kcal/dan")
-        msg.append(f"- Pojedeno danas: {d['total_kcal']:.0f} kcal")
-        msg.append(f"- Preostalo do deficita: {remaining} kcal")
+        msg = [
+            "Status za danas:",
+            f"- Održavanje težine: {nums['maintenance']} kcal/dan",
+            f"- Deficit (~20%): {nums['deficit']} kcal/dan",
+            f"- Pojedeno danas: {d['total_kcal']:.0f} kcal",
+            f"- Preostalo do dnevnog deficita: {remaining} kcal",
+        ]
         if d["total_p"] or d["total_f"] or d["total_c"]:
             msg.append(
-                f"- Makro za dan: P {d['total_p']:.1f} g / M {d['total_f']:.1f} g / UH {d['total_c']:.1f} g"
+                f"- Makroi danas: P {d['total_p']:.1f} g / M {d['total_f']:.1f} g / UH {d['total_c']:.1f} g"
             )
         if remaining < 0:
-            msg.append("⚠ Prešao si današnji deficit.")
+            msg.append("⚠ Prešao/la si dnevni limit, oprez sa grickalicama 😈")
         return "\n".join(msg)
 
-    msg = []
-    msg.append("Статус на сегодня:")
-    msg.append(f"- Поддержание веса: {nums['maintenance']} ккал/день")
-    msg.append(f"- Дефицит (~20%): {nums['deficit']} ккал/день")
-    msg.append(f"- Съедено сегодня: {d['total_kcal']:.0f} ккал")
-    msg.append(f"- Осталось до лимита дефицита: {remaining} ккал")
+    # en
+    msg = [
+        "Status for today:",
+        f"- Maintenance calories: {nums['maintenance']} kcal/day",
+        f"- Deficit (~20%): {nums['deficit']} kcal/day",
+        f"- Eaten today: {d['total_kcal']:.0f} kcal",
+        f"- Remaining to daily deficit: {remaining} kcal",
+    ]
     if d["total_p"] or d["total_f"] or d["total_c"]:
         msg.append(
-            f"- БЖУ за день: Б {d['total_p']:.1f} г / Ж {d['total_f']:.1f} г / У {d['total_c']:.1f} г"
+            f"- Macros today: P {d['total_p']:.1f} g / F {d['total_f']:.1f} g / C {d['total_c']:.1f} g"
         )
     if remaining < 0:
-        msg.append("⚠ Лимит дефицита на сегодня превышен.")
+        msg.append("⚠ Daily limit exceeded, go easy on late snacks 😈")
     return "\n".join(msg)
 
 
-def is_greeting(text: str) -> bool:
-    t = text.strip().lower()
-    greetings = [
-        "привет", "здарова", "здравствуйте", "добрый день", "добрый вечер",
-        "hi", "hello", "hey",
-        "zdravo", "cao", "ćao", "hej"
-    ]
-    return any(t.startswith(g) for g in greetings)
+def handle_user_message(user_id, text, lang: str):
+    """
+    Основная логика:
+    - если похоже на профиль -> пытаемся распарсить; если ок – обновляем, если нет – не трогаем старый профиль;
+    - /status, /help, /menu обрабатываем;
+    - всё остальное считаем приёмом пищи.
+    """
 
+    low = text.strip().lower()
 
-def is_thanks(text: str) -> bool:
-    t = text.strip().lower()
-    return any(x in t for x in ["спасибо", "спс", "благодар", "thank", "thx", "hvala", "tnx"])
+    # команды
+    if low in ["/status"]:
+        return build_status_message(user_id, lang)
 
+    if low in ["/help", "/menu"]:
+        return help_text(lang)
 
-def wants_joke(text: str) -> bool:
-    t = text.strip().lower()
-    return any(x in t for x in ["шутк", "анекдот", "joke", "funny", "vic", "šala", "salu"])
-
-
-def greeting_reply(lang) -> str:
-    if lang == "en":
-        return (
-            "Hi! 👋 I'm your calorie bot.\n"
-            "I count food, not your sins. Send /help if you want a quick guide 😉"
-        )
-    if lang == "sr":
-        return (
-            "Zdravo! 👋 Ja sam tvoj kalorijski bot.\n"
-            "Računam obroke, ne grehe. Pošalji /help za kratko uputstvo 😉"
-        )
-    return (
-        "Привет! 👋 Я бот, который считает калории, а не твои грехи.\n"
-        "Если хочешь краткую инструкцию — напиши /help 😉"
-    )
-
-
-def thanks_reply(lang) -> str:
-    if lang == "en":
-        return "You're welcome 😎 Keep going, future shredded legend."
-    if lang == "sr":
-        return "Nema na čemu 😎 Samo nastavi, budući zver."
-    return "Всегда пожалуйста 😎 Продолжаем превращать калории в прогресс."
-
-
-def joke_reply(lang) -> str:
-    if lang == "en":
-        return (
-            "Joke time 😄\n\n"
-            "— Coach, can I eat after 6pm?\n"
-            "— Sure. The question is: will you stop after 6am? 😈"
-        )
-    if lang == "sr":
-        return (
-            "Vreme je za šalu 😄\n\n"
-            "— Treneru, smem li da jedem posle 18h?\n"
-            "— Možeš, samo je pitanje: hoćeš li stati pre 6 ujutru? 😈"
-        )
-    return (
-        "Шутка подъехала 😄\n\n"
-        "— Тренер, можно есть после шести?\n"
-        "— Можно. Вопрос в другом: ты до скольки планируешь не останавливаться? 😈"
-    )
-
-
-def profile_help_text_all_langs():
-    return (
-        "Я могу работать на русском 🇷🇺, английском 🇬🇧 и сербском 🇷🇸.\n"
-        "Сначала выбери язык (1/2/3), потом заполни профиль по форме.\n"
-    )
-
-
-def handle_user_message(user_id, text):
-    # 0. Если язык ещё не выбран — сначала выбираем
-    lang = user_lang.get(user_id)
-    if lang is None:
-        chosen = set_lang_from_choice(user_id, text)
-        if chosen:
-            # Сразу после выбора языка даём инструкцию + форму
-            lang = chosen
-            intro = help_text(lang)
-            template = profile_template_text(lang)
-            send_text_message(user_id, intro)
-            return template
-        else:
-            return language_choice_text()
-
-    lang = get_lang(user_id)
-
-    # 1. Приветствия / спасибо / шутки
-    if is_greeting(text):
-        return greeting_reply(lang)
-
-    if is_thanks(text):
-        return thanks_reply(lang)
-
-    if wants_joke(text):
-        return joke_reply(lang)
-
-    # 2. Профиль
+    # профиль (по ключевым словам)
     if re.search(r'(возраст|age|godine|godina)', text, re.IGNORECASE) and \
        re.search(r'(рост|height|visina)', text, re.IGNORECASE) and \
        re.search(r'(вес|weight|težina|tezina)', text, re.IGNORECASE):
 
         prof = parse_profile_text(text)
         if prof is None:
-            # не смог распарсить
-            return help_text(lang) + "\n\n" + profile_template_text(lang)
+            # ВАЖНО: профиль НЕ перезаписываем, если не смогли распарсить
+            return profile_parse_error_text(lang)
 
         profiles[user_id] = prof
         nums = calc_profile_numbers(prof)
 
-        if lang == "en":
+        if lang == "ru":
             return (
-                "Profile updated ✅\n\n"
-                f"Age: {prof['age']}, height: {prof['height']} cm, weight: {prof['weight']} kg\n"
-                f"Goal: {prof['goal']} kg\n"
-                f"Activity factor: {prof['activity_factor']}\n\n"
-                f"Maintenance: {nums['maintenance']} kcal/day\n"
-                f"Deficit (~20%): {nums['deficit']} kcal/day\n\n"
-                "Now just send what you eat, and I'll track meals and remaining calories."
+                "Профиль обновлён ✅\n\n"
+                f"Возраст: {prof['age']}, рост: {prof['height']} см, вес: {prof['weight']} кг\n"
+                f"Цель: {prof['goal']} кг\n"
+                f"Активность: коэффициент {prof['activity_factor']}\n\n"
+                f"Поддержание веса: {nums['maintenance']} ккал/день\n"
+                f"Дефицит (~20%): {nums['deficit']} ккал/день\n\n"
+                "Теперь просто присылай, что ты ешь, а я буду считать приёмы и остаток."
             )
         if lang == "sr":
             return (
                 "Profil je ažuriran ✅\n\n"
                 f"Godine: {prof['age']}, visina: {prof['height']} cm, težina: {prof['weight']} kg\n"
                 f"Cilj: {prof['goal']} kg\n"
-                f"Faktor aktivnosti: {prof['activity_factor']}\n\n"
-                f"Održavanje: {nums['maintenance']} kcal/dan\n"
+                f"Aktivnost: koeficijent {prof['activity_factor']}\n\n"
+                f"Održavanje težine: {nums['maintenance']} kcal/dan\n"
                 f"Deficit (~20%): {nums['deficit']} kcal/dan\n\n"
-                "Sada samo šalji šta jedeš i ja ću pratiti obroke i preostale kalorije."
+                "Sada samo šalji šta jedeš, a ja ću brojati obroke i ostatak."
             )
+        # en
         return (
-            "Профиль обновлён ✅\n\n"
-            f"Возраст: {prof['age']}, рост: {prof['height']} см, вес: {prof['weight']} кг\n"
-            f"Цель: {prof['goal']} кг\n"
-            f"Коэффициент активности: {prof['activity_factor']}\n\n"
-            f"Поддержание: {nums['maintenance']} ккал/день\n"
-            f"Дефицит (~20%): {nums['deficit']} ккал/день\n\n"
-            "Теперь просто присылай, что ты ешь, а я буду считать приёмы пищи и остаток калорий."
+            "Profile updated ✅\n\n"
+            f"Age: {prof['age']}, height: {prof['height']} cm, weight: {prof['weight']} kg\n"
+            f"Goal: {prof['goal']} kg\n"
+            f"Activity factor: {prof['activity_factor']}\n\n"
+            f"Maintenance: {nums['maintenance']} kcal/day\n"
+            f"Deficit (~20%): {nums['deficit']} kcal/day\n\n"
+            "Now just send what you eat, and I’ll track your meals and remaining calories."
         )
 
-    # 3. Статус
-    low = text.strip().lower()
-    if low in ["/status", "статус", "остаток", "status", "stanje", "koliko je ostalo"]:
-        return build_status_message(user_id)
-
-    # 4. Всё остальное считаем приёмом пищи
-    return add_meal_and_get_status(user_id, text)
+    # всё остальное -> считаем приёмом пищи
+    return add_meal_and_get_status(user_id, text, lang)
 
 
 # ============= FLASK / TELEGRAM =============
@@ -675,33 +673,47 @@ def telegram_webhook():
         return jsonify({"ok": True})
 
     chat_id = update["message"]["chat"]["id"]
-    user_text = update["message"].get("text", "")
+    user_text = update["message"].get("text", "").strip()
 
-    text_lower = user_text.strip().lower()
-
-    # /start
-    if text_lower.startswith("/start"):
-        lang = user_lang.get(chat_id)
-        if lang is None:
-            reply = language_choice_text()
-            send_text_message(chat_id, reply)
-            return jsonify({"ok": True})
-        else:
-            # язык уже выбран — даём help + форму
-            send_text_message(chat_id, help_text(lang))
-            send_text_message(chat_id, profile_template_text(lang))
-            return jsonify({"ok": True})
-
-    # /help
-    if text_lower.startswith("/help"):
-        lang = get_lang(chat_id)
-        send_text_message(chat_id, help_text(lang))
-        send_text_message(chat_id, profile_template_text(lang))
+    # /start -> выбор языка
+    if user_text == "/start":
+        user_state[chat_id] = "lang_choice"
+        send_text_message(chat_id, language_choice_text())
         return jsonify({"ok": True})
 
-    # обычное сообщение
-    reply = handle_user_message(chat_id, user_text)
+    # смена языка в любой момент
+    if user_text in ["/lang", "/language"]:
+        user_state[chat_id] = "lang_choice"
+        send_text_message(chat_id, language_choice_text())
+        return jsonify({"ok": True})
+
+    # обрабатываем выбор языка, если ждём его
+    if user_state.get(chat_id) == "lang_choice":
+        if user_text in ["1", "2", "3"]:
+            if user_text == "1":
+                lang = "en"
+            elif user_text == "2":
+                lang = "ru"
+            else:
+                lang = "sr"
+            user_lang[chat_id] = lang
+            user_state[chat_id] = "idle"
+
+            # интро + шаблон отдельными сообщениями
+            send_text_message(chat_id, after_language_selected_intro(lang))
+            send_text_message(chat_id, profile_template(lang))
+            send_text_message(chat_id, help_text(lang))
+            return jsonify({"ok": True})
+        else:
+            # повторяем просьбу выбрать 1/2/3
+            send_text_message(chat_id, language_choice_text())
+            return jsonify({"ok": True})
+
+    # обычный режим
+    lang = get_lang(chat_id)
+    reply = handle_user_message(chat_id, user_text, lang)
     send_text_message(chat_id, reply)
+
     return jsonify({"ok": True})
 
 
