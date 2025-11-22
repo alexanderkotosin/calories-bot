@@ -24,7 +24,7 @@ user_state = {}   # user_state[user_id] = 'lang_choice' | 'idle'
 # ========= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 def today_key():
-    # можно заменить на локальную временную зону
+    # можно заменить на локальную зону
     return time.strftime("%Y%m%d", time.gmtime())
 
 
@@ -129,68 +129,21 @@ def parse_profile_text(text):
     }
 
 
-def extract_kcal_from_text(text: str):
+def extract_kcal_from_text(text):
     """
-    Пытаемся вытащить явное количество ККАЛ из текста.
-
-    1) Если есть шаблоны типа '300 ккал', '300 kcal', '300 кк', '300 kk' —
-       берём ПОСЛЕДНЕЕ такое число.
-    2) Если нет явного 'ккал', но строка заканчивается числом
-       ('овсянка с яблоком 300'), пытаемся трактовать его как калории,
-       НО только если это число НЕ связано с единицами (g, ml, kg, %, ...),
-       и не является частью дроби типа '1/8'.
+    Можно написать просто число в конце:
+    '... 420' -> 420 ккал.
+    Или: '420 ккал', '420 kcal', '420 кк', '420 kk'.
+    Берём ПОСЛЕДНЕЕ число.
     """
-
-    if not text:
+    nums = re.findall(r'(\d+)\s*(?:ккал|kcal|кк|kk)?', text, re.IGNORECASE)
+    if not nums:
         return None
-
-    # 1. Явное указание ккал
-    explicit = re.findall(
-        r'(\d+)\s*(?:ккал|kcal|cal|кк|kk)',
-        text,
-        flags=re.IGNORECASE
-    )
-    if explicit:
-        return float(explicit[-1])
-
-    # 2. Возможное число в конце строки
-    stripped = text.strip()
-    # Не берём цифры, если перед ними стоит слэш (1/8 -> игнор)
-    m = re.search(r'(?<!/)(\d+)\s*$', stripped)
-    if not m:
-        return None
-
-    candidate_str = m.group(1)
-    candidate = float(candidate_str)
-
-    # Берём хвост строки вокруг числа, чтобы понять контекст
-    tail_start = max(0, m.start(1) - 8)
-    tail = stripped[tail_start:].lower()
-
-    # Если в хвосте есть единицы измерения — считаем, что это не ккал
-    unit_keywords = [
-        " g", "g.", " gr", "gr.", " gram", "grama", "г", " г", "гр", "гр.",
-        "кг", " kg", "kg.", "килограмм", "kilogram",
-        " ml", "ml.", " мл", "мл.", "milliliter",
-        " l", "l.", " л", "литр", "litr",
-        " mg", "mg.", " мг", "мг.",
-        "%", " проц", " procent", "procenat", "procenta"
-    ]
-    for uk in unit_keywords:
-        if uk in tail:
-            return None
-
-    # Если рядом со значением всё-таки есть дробь (типа 1/8 булочки) — игнорим
-    if "/" in tail:
-        return None
-
-    return candidate
+    return float(nums[-1])
 
 
 def _extract_json_block(text: str):
     """Достаём первый {...} из ответа модели."""
-    if not text:
-        return None
     t = text.strip()
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.IGNORECASE)
     start, end = t.find("{"), t.rfind("}")
@@ -212,18 +165,14 @@ def ask_ai_for_meal(text_description: str, lang: str):
     if lang == "ru":
         cuisine_hint = (
             "User likely describes dishes from Russian, post-Soviet and Eastern "
-            "European cuisine (borsch, pelmeni, vareniki, blini, syrniki, "
-            "olivier salad, shashlik, kotlety, grechka with meat, etc.), "
+            "European cuisine (borsch, pelmeni, blini, olivier, shashlik, etc.), "
             "plus common international dishes."
         )
     elif lang == "sr":
         cuisine_hint = (
-            "User likely describes Serbian and Balkan cuisine: burek, gibanica, "
-            "pljeskavica, ćevapi, sarma, punjena paprika, musaka, pasulj, "
-            "kajmak, ajvar, čorbe, kao i standardna internacionalna jela. "
-            "If dish names look like Serbian/Balkan (burek, ćevapi, pljeskavica, "
-            "sarma, pasulj, etc.), use typical regional recipes and portions for "
-            "nutritional estimation."
+            "User likely describes Serbian and Balkan cuisine (burek, pljeskavica, "
+            "čevapi, sarma, pasulj, ajvar, kajmak, gibanica, etc.), "
+            "plus common international dishes."
         )
     else:
         cuisine_hint = (
