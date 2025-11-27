@@ -406,26 +406,33 @@ def add_meal_record(user_id, day, meal_number, desc, kcal):
         "kcal": kcal,
     })
 
-
 def parse_profile(text):
     t = text.lower()
 
-    def find_int(label_ru, label_en):
-        pattern = rf"{label_ru}:\s*(\d+)|{label_en}:\s*(\d+)"
+    def find_int(labels):
+        """
+        Ищем целое число после одного из вариантов метки:
+        'возраст', 'age', 'цель (вес)', 'goal weight' и т.п.
+        Формат: <метка>: <число>
+        """
+        pattern = r"(" + "|".join([re.escape(l) for l in labels]) + r")\s*:\s*(\d+)"
         m = re.search(pattern, t)
         if not m:
             return None
-        return int(m.group(1) or m.group(2))
+        return int(m.group(2))
 
-    age = find_int("возраст", "age")
-    height = find_int("рост", "height")
-    weight = find_int("вес", "weight")
-    goal = find_int("цель", "goal")
+    age = find_int(["возраст", "age"])
+    height = find_int(["рост", "height"])
+    weight = find_int(["вес", "weight"])
+    # вот тут добавляем все варианты цели
+    goal = find_int(["цель", "цель (вес)", "цель веса", "goal", "goal weight"])
 
+    # пол
     sex = "m"
     if "ж" in t or "f" in t or "female" in t:
         sex = "f"
 
+    # активность
     if "низк" in t or "low" in t:
         activity = 1.2
     elif "средн" in t or "medium" in t:
@@ -444,7 +451,9 @@ def parse_profile(text):
             "sex": sex,
             "activity_factor": activity,
         }
+
     return None
+
 
 
 def calc_target_kcal(profile):
