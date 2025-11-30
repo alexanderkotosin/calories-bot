@@ -13,7 +13,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
-# HuggingFace Inference API endpoint
+# HuggingFace Inference API endpoint for Mixtral
+# Example: https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1
 AI_ENDPOINT = os.environ.get("AI_ENDPOINT")
 AI_KEY = os.environ.get("AI_KEY")
 
@@ -42,7 +43,8 @@ def supabase_select(table, match):
         r = requests.get(url, headers=supabase_headers(), params=params, timeout=10)
         data = r.json()
         return data if isinstance(data, list) else []
-    except:
+    except Exception as e:
+        print("supabase_select error:", e)
         return []
 
 
@@ -51,7 +53,8 @@ def supabase_insert(table, data):
     try:
         r = requests.post(url, headers=supabase_headers(True), data=json.dumps(data), timeout=10)
         return r.json()
-    except:
+    except Exception as e:
+        print("supabase_insert error:", e)
         return []
 
 
@@ -65,12 +68,13 @@ def supabase_upsert(table, data):
             timeout=10,
         )
         return r.json()
-    except:
+    except Exception as e:
+        print("supabase_upsert error:", e)
         return []
 
 
 # =======================================
-# LANGUAGE PACKS (с исправленной локализацией)
+# LANGUAGE PACKS
 # =======================================
 
 LANG_CHOICES_TEXT = (
@@ -96,13 +100,12 @@ TEXT = {
             "• СРЕДНЯЯ — 7–12 тыс шагов в день, 2–3 тренировки/нед.\n"
             "• ВЫСОКАЯ — 12k+ шагов, 4+ тренировок/нед или физическая работа."
         ),
-        "profile_saved": "Профиль сохранён ✅ Отлично, теперь просто отправляй, что ты съел!",
+        "profile_saved": "Профиль сохранён ✅",
         "need_profile_first": "Похоже, профиль ещё не настроен. Нажми /start и заполни его 👇",
         "meal_count": "Приём пищи №{}",
         "daily_total": "Итого сегодня: {} ккал",
         "daily_left": "Осталось до нормы: {} ккал",
-        "need_details": "Опиши, пожалуйста, что было на тарелке и примерно сколько.",
-
+        "need_details": "Я не смог нормально разобрать приём пищи. Опиши ещё раз, простыми словами: что было и примерно сколько.",
         "logging_help": (
             "Как вносить еду, чтобы я считал точнее:\n\n"
             "• Пиши простым языком, без формальностей.\n"
@@ -118,7 +121,6 @@ TEXT = {
             "• Учитывай напитки с калориями (сладкая газировка, сок, алкоголь, кофе с молоком/сиропом).\n"
             "• Если не знаешь граммы — пиши \"кусок\", \"тарелка\", \"стакан\", \"ложка\" — я оценю по опыту."
         ),
-
     },
 
     "en": {
@@ -136,14 +138,12 @@ TEXT = {
             "• MEDIUM — 7–12k steps, 2–3 workouts/week.\n"
             "• HIGH — 12k+ steps, 4+ workouts/week or physical job."
         ),
-        "profile_saved": "Profile saved ✅ Now just send what you ate!",
+        "profile_saved": "Profile saved ✅",
         "need_profile_first": "Your profile is not set yet. Send /start 👇",
         "meal_count": "Meal #{}",
         "daily_total": "Total today: {} kcal",
         "daily_left": "Remaining: {} kcal",
-        "need_details": "Please describe what was on the plate and roughly how much.",
-
-
+        "need_details": "I couldn't properly understand this meal. Describe again in simple words: what and roughly how much.",
         "logging_help": (
             "How to enter food so I can count more accurately:\n\n"
             "• Use simple language.\n"
@@ -157,8 +157,8 @@ TEXT = {
             "Important:\n"
             "• Include sauces (ketchup, mayo, yogurt sauces, oil).\n"
             "• Include drinks with calories (soda, juice, alcohol, coffee with milk/syrup).\n"
-            "• If you don't know grams, write \"a slice\", \"a plate\", \"a glass\", \"a spoon\" —\n"
-            "  I'll estimate from experience."
+            "• If you don't know grams, write \"a slice\", \"a plate\", \"a glass\", \"a spoon\" — "
+            "I'll estimate from experience."
         ),
     },
 
@@ -177,13 +177,12 @@ TEXT = {
             "• SREDNJA — 7–12k koraka, 2–3 treninga nedeljno.\n"
             "• VISOKA — 12k+ koraka, 4+ treninga ili fizički posao."
         ),
-        "profile_saved": "Profil sačuvan ✅ Pošalji šta si jeo!",
+        "profile_saved": "Profil sačuvan ✅",
         "need_profile_first": "Profil još nije podešen. Pošalji /start 👇",
         "meal_count": "Obrok #{}",
         "daily_total": "Ukupno danas: {} kcal",
         "daily_left": "Preostalo: {} kcal",
-        "need_details": "Opiši jednostavno šta si jeo i približnu količinu.",
-
+        "need_details": "Nisam najbolje razumeo obrok. Opiši ponovo jednostavno: šta i približno koliko.",
         "logging_help": (
             "Kako da unosiš hranu da bih preciznije računaо kalorije:\n\n"
             "• Piši jednostavnim jezikom.\n"
@@ -199,12 +198,11 @@ TEXT = {
             "• Računaj pića sa kalorijama (gazirana pića, sokovi, alkohol, kafa sa mlekom/sirupom).\n"
             "• Ako ne znaš grame — napiši \"parče\", \"tanjir\", \"čaša\", \"kašika\" — proceniću po iskustvu."
         ),
-
     }
 }
 
 # =======================================
-# UNIVERSAL HUGGINGFACE INFERENCE CALL
+# HUGGINGFACE INFERENCE HELPER
 # =======================================
 
 def call_hf_inference(prompt: str):
@@ -212,6 +210,7 @@ def call_hf_inference(prompt: str):
     Универсальный хелпер для Mixtral через Inference API.
     """
     if not AI_ENDPOINT or not AI_KEY:
+        print("HF config missing")
         return None
 
     headers = {
@@ -219,26 +218,36 @@ def call_hf_inference(prompt: str):
         "Content-Type": "application/json",
     }
 
-    payload = {"inputs": prompt}
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 512,
+            "temperature": 0.4,
+            "return_full_text": False,
+        },
+    }
 
     try:
         r = requests.post(AI_ENDPOINT, headers=headers, json=payload, timeout=40)
         data = r.json()
 
-        if isinstance(data, list) and "generated_text" in data[0]:
+        if isinstance(data, list) and data and "generated_text" in data[0]:
             return data[0]["generated_text"]
 
         if isinstance(data, dict) and "error" in data:
             print("HF API ERROR:", data["error"])
             return None
 
-        return str(data)
+        print("HF unexpected response:", data)
+        return None
 
     except Exception as e:
         print("HF REQUEST ERROR:", e)
         return None
+
+
 # =======================================
-# PROFILE STORAGE
+# PROFILE STORAGE & PARSING
 # =======================================
 
 def get_profile(user_id):
@@ -254,16 +263,7 @@ def save_profile(user_id, new_data):
     supabase_upsert("profiles", merged)
 
 
-# =======================================
-# PROFILE PARSER
-# =======================================
-
 def parse_profile(text: str):
-    """
-    Мы убрали двоеточия — бот просто ищет числа в строке,
-    ориентируясь на ключевые слова.
-    """
-
     t = text.lower()
 
     def find_value(keywords):
@@ -279,12 +279,10 @@ def parse_profile(text: str):
     weight = find_value(["вес", "weight", "težina", "tezina"])
     goal = find_value(["цель", "goal", "cilj", "ciljna"])
 
-    # SEX
     sex = "m"
-    if any(x in t for x in ["ж", "f", "female", "ž"]):
+    if any(x in t for x in [" ж", " f", "female", "ž", " жен", "жен "]):
         sex = "f"
 
-    # ACTIVITY
     if "низк" in t or "low" in t or "niska" in t:
         activity = 1.2
     elif "средн" in t or "medium" in t or "srednja" in t:
@@ -292,7 +290,7 @@ def parse_profile(text: str):
     elif "высок" in t or "high" in t or "visoka" in t:
         activity = 1.6
     else:
-        activity = None  # чтобы бот снова попросил заполнить
+        activity = None
 
     if all([age, height, weight, goal, activity]):
         return {
@@ -308,7 +306,7 @@ def parse_profile(text: str):
 
 
 # =======================================
-# TDEE / TARGET NORM CALCULATION
+# NORM CALC & DIARY
 # =======================================
 
 def calc_target_kcal(profile):
@@ -324,10 +322,6 @@ def calc_target_kcal(profile):
     deficit = tdee * 0.8
     return round(deficit)
 
-
-# =======================================
-# DIARY STORAGE
-# =======================================
 
 def get_today_key():
     return datetime.datetime.now().strftime("%Y%m%d")
@@ -348,7 +342,7 @@ def update_diary_kcal(user_id, day, delta_kcal):
     supabase_upsert("diary_days", {
         "user_id": user_id,
         "day": day,
-        "total_kcal": new_total
+        "total_kcal": new_total,
     })
     return new_total
 
@@ -364,32 +358,25 @@ def add_meal_record(user_id, day, meal_number, text, kcal):
 
 
 # =======================================
-# FOOD DETECTION 2.0 (решение №1)
+# FOOD DETECTION (решение №1)
 # =======================================
 
 def is_food_message(text: str) -> bool:
-    """
-    ЛОГИКА: почти всё считаем едой, кроме команд и профиля.
-    Если есть хоть одно число или хоть одно слово о еде → это еда.
-    """
-
     if not text:
         return False
 
     t = text.lower()
 
-    # Есть хотя бы одно число → считаем едой
     if re.search(r"\d", t):
         return True
 
-    # Слова-индикаторы еды
     food_words = [
         "есть", "ел", "съел", "поел", "обед", "завтрак", "ужин", "перекус",
         "куриц", "chicken", "meat", "fish", "рыба", "лосось", "tuna",
         "яйц", "egg", "сыр", "cheese", "йогурт", "yogurt",
         "хлеб", "булка", "батон",
         "рис", "rice", "греч", "овсян",
-        "паста", "макарон", "spaghetti",
+        "паста", "макарон", "spaghetti", "noodles",
         "пицц", "pizza",
         "burger", "бургер",
         "кебаб", "kebab", "шаурма",
@@ -405,16 +392,12 @@ def is_food_message(text: str) -> bool:
 
     return False
 
+
 # =======================================
-# AI — MEAL ANALYSIS VIA MIXTRAL
+# AI MEAL ANALYSIS (TOTAL_KCAL: XXX)
 # =======================================
 
 def ai_meal_analysis(meal_text: str, lang: str) -> str:
-    """
-    Mixtral разбирает приём пищи и В КОНЦЕ всегда пишет строку:
-    TOTAL_KCAL: XXX
-    """
-
     if lang == "en":
         system_prompt = (
             "You are a friendly nutritionist. You receive a natural language description of a meal.\n"
@@ -456,20 +439,11 @@ def ai_meal_analysis(meal_text: str, lang: str) -> str:
         )
 
     prompt = f"{system_prompt}\n\nТекст пользователя:\n{meal_text}"
-
     response = call_hf_inference(prompt)
     return response or ""
 
 
-
-# =======================================
-# EXTRACT Kcal FROM MIXTRAL OUTPUT
-# =======================================
-
 def extract_total_kcal(ai_text: str) -> int:
-    """
-    Извлекаем TOTAL_KCAL: XXX из ответа ИИ.
-    """
     if not ai_text:
         return None
 
@@ -485,40 +459,24 @@ def extract_total_kcal(ai_text: str) -> int:
         return None
 
 
-
-# =======================================
-# FINAL MEAL TEXT BUILDER
-# =======================================
-
-def build_meal_reply(lang: str, meal_number: int, ai_text: str, total_kcal: int, new_total: int, left: int):
+def build_meal_reply(lang: str, meal_number: int, ai_text: str, new_total: int, left: int) -> str:
     T = TEXT[lang]
+    # убираем строку TOTAL_KCAL из текста для красоты
+    lines = ai_text.strip().splitlines()
+    cleaned_lines = [ln for ln in lines if not ln.strip().upper().startswith("TOTAL_KCAL:")]
+    explanation = "\n".join(cleaned_lines).strip()
 
-    if lang == "ru":
-        txt = (
-            f"{T['meal_count'].format(meal_number)}\n\n"
-            f"{ai_text}\n\n"
-            f"{T['daily_total'].format(new_total)}\n"
-            f"{T['daily_left'].format(left)}"
-        )
-    elif lang == "en":
-        txt = (
-            f"{T['meal_count'].format(meal_number)}\n\n"
-            f"{ai_text}\n\n"
-            f"{T['daily_total'].format(new_total)}\n"
-            f"{T['daily_left'].format(left)}"
-        )
-    else:  # srpski
-        txt = (
-            f"{T['meal_count'].format(meal_number)}\n\n"
-            f"{ai_text}\n\n"
-            f"{T['daily_total'].format(new_total)}\n"
-            f"{T['daily_left'].format(left)}"
-        )
+    reply = (
+        f"{T['meal_count'].format(meal_number)}\n\n"
+        f"{explanation}\n\n"
+        f"{T['daily_total'].format(new_total)}\n"
+        f"{T['daily_left'].format(left)}"
+    )
+    return reply
 
-    return txt
 
 # =======================================
-# PROFILE EXPLANATION TEXT
+# PROFILE EXPLANATION
 # =======================================
 
 def build_profile_explanation(profile, lang: str) -> str:
@@ -615,19 +573,18 @@ def telegram_webhook():
     text = msg.get("text") or ""
     text_stripped = text.strip()
 
-    # текущий профиль (может быть None)
     profile = get_profile(chat_id)
     lang = (profile.get("lang") if profile and profile.get("lang") else "ru")
     if lang not in TEXT:
         lang = "ru"
     T = TEXT[lang]
 
-    # /start — выбор языка
+    # /start -> choose language
     if text_stripped.lower().startswith("/start"):
         send_message(chat_id, LANG_CHOICES_TEXT)
         return "OK"
 
-    # выбор языка
+    # language selection
     if text_stripped in ("1", "2", "3"):
         lang_map = {"1": "ru", "2": "en", "3": "sr"}
         lang = lang_map[text_stripped]
@@ -637,9 +594,9 @@ def telegram_webhook():
         send_message(chat_id, T["profile_template"])
         return "OK"
 
-    # попытка распарсить профиль
+    # profile parsing
     parsed = parse_profile(text_stripped)
-        if parsed:
+    if parsed:
         parsed["lang"] = lang
         save_profile(chat_id, parsed)
         profile = get_profile(chat_id)
@@ -648,19 +605,17 @@ def telegram_webhook():
             lang = "ru"
         explanation = build_profile_explanation(profile, lang)
         send_message(chat_id, explanation)
-        # сразу даём инструкцию, как логировать еду
         send_message(chat_id, TEXT[lang]["logging_help"])
         return "OK"
 
-
-    # обновим профиль ещё раз
+    # reload profile
     profile = get_profile(chat_id)
     lang = (profile.get("lang") if profile and profile.get("lang") else "ru")
     if lang not in TEXT:
         lang = "ru"
     T = TEXT[lang]
 
-    # проверка, что профиль полный
+    # check profile completeness
     essential = ["age", "height", "weight", "goal", "activity_factor", "sex"]
     has_full_profile = bool(profile and all(profile.get(k) is not None for k in essential))
 
@@ -669,13 +624,12 @@ def telegram_webhook():
         send_message(chat_id, T["profile_template"])
         return "OK"
 
-    # профиль есть → считаем, что все нормальные сообщения — это еда
+    # if message not recognized as food -> show instructions
     if not is_food_message(text_stripped):
         send_message(chat_id, TEXT[lang]["logging_help"])
         return "OK"
 
-
-    # ==== РЕЖИМ ЕДЫ: Анализ через Mixtral ====
+    # FOOD MODE: call AI
     ai_text = ai_meal_analysis(text_stripped, lang)
     total_kcal = extract_total_kcal(ai_text)
 
@@ -683,7 +637,6 @@ def telegram_webhook():
         send_message(chat_id, T["need_details"])
         send_message(chat_id, TEXT[lang]["logging_help"])
         return "OK"
-
 
     kcal = int(total_kcal)
 
@@ -696,9 +649,8 @@ def telegram_webhook():
     target = calc_target_kcal(profile)
     left = target - new_total
 
-    reply = build_meal_reply(lang, meal_number, ai_text, kcal, new_total, left)
+    reply = build_meal_reply(lang, meal_number, ai_text, new_total, left)
 
-    # если перебор по калориям — добавим комментарий
     if new_total > target:
         over = new_total - target
         if lang == "en":
@@ -712,7 +664,7 @@ def telegram_webhook():
             extra = (
                 f"\n\nDanas si otišao oko {over} kcal iznad svoje dnevne norme.\n"
                 "Nije smak sveta, ali ako se često ponavlja, kilaža polako raste.\n"
-                "Savet: sutra napravi mali minus (100–200 kcal ispod norme) "
+                "Savet: sutra napravi mali minus (100–200 kcal ispod norme), "
                 "smanji slatkiše/grickalice i ubaci malo više kretanja — bez izgladnjivanja 🙂"
             )
         else:
