@@ -102,6 +102,23 @@ TEXT = {
         "daily_total": "Итого сегодня: {} ккал",
         "daily_left": "Осталось до нормы: {} ккал",
         "need_details": "Опиши, пожалуйста, что было на тарелке и примерно сколько.",
+
+        "logging_help": (
+            "Как вносить еду, чтобы я считал точнее:\n\n"
+            "• Пиши простым языком, без формальностей.\n"
+            "• Указывай примерные количества, не нужны точные цифры.\n\n"
+            "Примеры:\n"
+            "• \"2 ломтика цельнозернового хлеба, 2 яйца, немного сыра, чай без сахара\".\n"
+            "• \"Куриная грудка примерно 150–200 г, 150 г риса, салат из огурцов и помидоров,\n"
+            "   1 столовая ложка оливкового масла\".\n"
+            "• \"Бургер из кафе, средняя картошка фри, 2 чайные ложки кетчупа,\n"
+            "   капучино 300 мл с молоком 1,5%, без сахара\".\n\n"
+            "Важно:\n"
+            "• Учитывай соусы (кетчуп, майонез, йогурт-соусы, масло).\n"
+            "• Учитывай напитки с калориями (сладкая газировка, сок, алкоголь, кофе с молоком/сиропом).\n"
+            "• Если не знаешь граммы — пиши \"кусок\", \"тарелка\", \"стакан\", \"ложка\" — я оценю по опыту."
+        ),
+
     },
 
     "en": {
@@ -125,6 +142,24 @@ TEXT = {
         "daily_total": "Total today: {} kcal",
         "daily_left": "Remaining: {} kcal",
         "need_details": "Please describe what was on the plate and roughly how much.",
+
+
+        "logging_help": (
+            "How to enter food so I can count more accurately:\n\n"
+            "• Use simple language.\n"
+            "• Approximate amounts are enough, not exact grams.\n\n"
+            "Examples:\n"
+            "• \"2 slices of whole-grain bread, 2 eggs, a bit of cheese, tea without sugar\".\n"
+            "• \"Chicken breast about 150–200 g, 150 g boiled rice, cucumber-tomato salad,\n"
+            "   1 tablespoon of olive oil\".\n"
+            "• \"Burger from a café, medium fries, 2 teaspoons of ketchup,\n"
+            "   cappuccino 300 ml with 1.5% milk, no sugar\".\n\n"
+            "Important:\n"
+            "• Include sauces (ketchup, mayo, yogurt sauces, oil).\n"
+            "• Include drinks with calories (soda, juice, alcohol, coffee with milk/syrup).\n"
+            "• If you don't know grams, write \"a slice\", \"a plate\", \"a glass\", \"a spoon\" —\n"
+            "  I'll estimate from experience."
+        ),
     },
 
     "sr": {
@@ -148,6 +183,23 @@ TEXT = {
         "daily_total": "Ukupno danas: {} kcal",
         "daily_left": "Preostalo: {} kcal",
         "need_details": "Opiši jednostavno šta si jeo i približnu količinu.",
+
+        "logging_help": (
+            "Kako da unosiš hranu da bih preciznije računaо kalorije:\n\n"
+            "• Piši jednostavnim jezikom.\n"
+            "• Dovoljne su približne količine, ne moraju tačni grami.\n\n"
+            "Primeri:\n"
+            "• \"2 parčeta integralnog hleba, 2 jaja, malo sira, čaj bez šećera\".\n"
+            "• \"Pileća prsa oko 150–200 g, 150 g kuvanog pirinča, salata od krastavca i paradajza,\n"
+            "   1 supena kašika maslinovog ulja\".\n"
+            "• \"Burger iz lokala, srednja porcija pomfrita, 2 kašičice kečapa,\n"
+            "   kapućino 300 ml sa mlekom 1,5%, bez šećera\".\n\n"
+            "Važno:\n"
+            "• Računaj i soseve (kečap, majonez, jogurt-sosovi, ulje).\n"
+            "• Računaj pića sa kalorijama (gazirana pića, sokovi, alkohol, kafa sa mlekom/sirupom).\n"
+            "• Ako ne znaš grame — napiši \"parče\", \"tanjir\", \"čaša\", \"kašika\" — proceniću po iskustvu."
+        ),
+
     }
 }
 
@@ -359,59 +411,55 @@ def is_food_message(text: str) -> bool:
 
 def ai_meal_analysis(meal_text: str, lang: str) -> str:
     """
-    Запрос к Mixtral, который разбирает еду по-продуктово,
-    считает примерные калории и формирует структурированный ответ,
-    похожий на ChatGPT-стиль.
+    Mixtral разбирает приём пищи и В КОНЦЕ всегда пишет строку:
+    TOTAL_KCAL: XXX
     """
 
-    system_ru = (
-        "Ты — нутриционист. Разбери приём пищи, который прислал пользователь. "
-        "Определи продукты и приблизительные порции, даже если они указаны не точно. "
-        "Укажи примерные калории для каждого продукта и общий итог.\n"
-        "Всегда используй реалистичные значения. "
-        "Для обычного блюда одного человека итог обычно 200–1200 ккал, "
-        "но если пользователь явно описывает большой объём (много еды или весь день за раз), "
-        "разрешено больше — НЕ придумывай лишнее.\n"
-        "Структура ответа:\n"
-        "1) Список продуктов: продукт — оценка калорий.\n"
-        "2) ИТОГО: X ккал.\n"
-        "Пиши дружелюбно, но чётко."
-    )
+    if lang == "en":
+        system_prompt = (
+            "You are a friendly nutritionist. You receive a natural language description of a meal.\n"
+            "Your tasks:\n"
+            "1) Break the meal into 2–7 main components (food items).\n"
+            "2) For each component, give an approximate kcal value.\n"
+            "3) At the VERY END, on a separate line, write the TOTAL calories in the exact format:\n"
+            "TOTAL_KCAL: XXX\n"
+            "where XXX is an integer.\n\n"
+            "Use realistic values. A typical single-person meal is often 200–1200 kcal, "
+            "but if the user clearly describes a big amount of food or the whole day, higher totals are acceptable.\n"
+            "Do not add any text after the TOTAL_KCAL line."
+        )
+    elif lang == "sr":
+        system_prompt = (
+            "Ti si prijateljski nutricionista. Dobijaš opis obroka na prirodnom jeziku.\n"
+            "Tvoj zadatak:\n"
+            "1) Podeli obrok na 2–7 glavnih stavki.\n"
+            "2) Za svaku stavku daj približnu kalorijsku vrednost (kcal).\n"
+            "3) NA SAMOM KRAJU, u posebnoj liniji, napiši ukupan broj kalorija u tačnom formatu:\n"
+            "TOTAL_KCAL: XXX\n"
+            "gde je XXX ceo broj.\n\n"
+            "Koristi realne vrednosti. Običan obrok je 200–1200 kcal, ali ako korisnik opiše veliku količinu "
+            "ili ceo dan, dozvoljeno je više.\n"
+            "Nemoj pisati nikakav tekst posle linije TOTAL_KCAL."
+        )
+    else:
+        system_prompt = (
+            "Ты — дружелюбный нутриционист. Тебе дают описание приёма пищи обычным языком.\n"
+            "Твоя задача:\n"
+            "1) Разбить приём пищи на 2–7 основных продуктов/блюд.\n"
+            "2) Для каждого указать примерную калорийность (ккал).\n"
+            "3) В САМОМ КОНЦЕ отдельной строкой написать общий итог строго в формате:\n"
+            "TOTAL_KCAL: XXX\n"
+            "где XXX — целое число.\n\n"
+            "Используй реалистичные значения. Обычный приём пищи одного человека — около 200–1200 ккал, "
+            "но если явно описано много еды или целый день, допустимо больше.\n"
+            "После строки TOTAL_KCAL НИЧЕГО больше не пиши."
+        )
 
-    system_en = (
-        "You are a nutritionist. Break down the user's meal into individual components. "
-        "Estimate calories per item and total calories. "
-        "Use realistic values. A normal single-person meal is usually 200–1200 kcal, "
-        "but if the user clearly describes a large amount of food or an entire day, higher values are allowed. "
-        "Do NOT hallucinate.\n\n"
-        "Response structure:\n"
-        "1) List of items: item — kcal estimate.\n"
-        "2) TOTAL.\n"
-        "Friendly but concise."
-    )
+    prompt = f"{system_prompt}\n\nТекст пользователя:\n{meal_text}"
 
-    system_sr = (
-        "Ti si nutricionista. Analiziraj obrok koji je korisnik poslao. "
-        "Razdvoji ga na stavke, proceni kalorije za svaku i ukupno. "
-        "Koristi realne vrednosti. Običan obrok je 200–1200 kcal, "
-        "ali ako korisnik opiše veliku količinu hrane ili ceo dan, može i više. "
-        "Ne izmišljaj.\n\n"
-        "Struktura:\n"
-        "1) Stavke i kalorije.\n"
-        "2) UKUPNO.\n"
-        "Piši jasno i prijateljski."
-    )
-
-    system_prompt = {
-        "ru": system_ru,
-        "en": system_en,
-        "sr": system_sr,
-    }.get(lang, system_ru)
-
-    full_prompt = f"{system_prompt}\n\nТекст пользователя:\n{meal_text}"
-
-    response = call_hf_inference(full_prompt)
+    response = call_hf_inference(prompt)
     return response or ""
+
 
 
 # =======================================
@@ -420,33 +468,22 @@ def ai_meal_analysis(meal_text: str, lang: str) -> str:
 
 def extract_total_kcal(ai_text: str) -> int:
     """
-    Извлекает итог калорий из текста ИИ.
-    Ищем такие варианты:
-    - 'ИТОГО: 530 ккал'
-    - 'TOTAL: 850 kcal'
-    - 'Total ~1200 kcal'
+    Извлекаем TOTAL_KCAL: XXX из ответа ИИ.
     """
-
     if not ai_text:
         return None
 
-    patterns = [
-        r"итого[:,\s]*~?\s*(\d+)",
-        r"итого[:,\s]*(\d+)",
-        r"total[:,\s]*~?\s*(\d+)",
-        r"total[:,\s]*(\d+)",
-        r"ukupno[:,\s]*(\d+)",
-    ]
+    m = re.search(r"TOTAL_KCAL:\s*(\d+(?:\.\d+)?)", ai_text, flags=re.IGNORECASE)
+    if not m:
+        print("NO TOTAL_KCAL IN AI OUTPUT:", ai_text)
+        return None
 
-    for p in patterns:
-        m = re.search(p, ai_text.lower())
-        if m:
-            try:
-                return int(m.group(1))
-            except:
-                pass
+    try:
+        return int(float(m.group(1)))
+    except Exception as e:
+        print("TOTAL_KCAL PARSE ERROR:", e, ai_text)
+        return None
 
-    return None
 
 
 # =======================================
@@ -602,7 +639,7 @@ def telegram_webhook():
 
     # попытка распарсить профиль
     parsed = parse_profile(text_stripped)
-    if parsed:
+        if parsed:
         parsed["lang"] = lang
         save_profile(chat_id, parsed)
         profile = get_profile(chat_id)
@@ -611,7 +648,10 @@ def telegram_webhook():
             lang = "ru"
         explanation = build_profile_explanation(profile, lang)
         send_message(chat_id, explanation)
+        # сразу даём инструкцию, как логировать еду
+        send_message(chat_id, TEXT[lang]["logging_help"])
         return "OK"
+
 
     # обновим профиль ещё раз
     profile = get_profile(chat_id)
@@ -631,29 +671,9 @@ def telegram_webhook():
 
     # профиль есть → считаем, что все нормальные сообщения — это еда
     if not is_food_message(text_stripped):
-        # даже если это не похоже на еду, мягко направляем пользователя
-        if lang == "en":
-            send_message(
-                chat_id,
-                "I track food. Just describe what you ate today in simple words, with approximate amounts.\n"
-                "Example: \"2 slices of bread, 150–200 g chicken, a bit of yogurt + ketchup sauce, "
-                "coffee with 1.5% milk, no sugar.\""
-            )
-        elif lang == "sr":
-            send_message(
-                chat_id,
-                "Ja pratim hranu. Opiši jednostavno šta si jeo danas i približne količine.\n"
-                "Primer: \"2 parčeta hleba, 150–200 g piletine, malo sosa od grčkog jogurta i kečapa, "
-                "kafa sa mlekom 1,5%, bez šećera.\""
-            )
-        else:
-            send_message(
-                chat_id,
-                "Я считаю калории по еде. Опиши простыми словами, что ты съел и примерно сколько.\n"
-                "Например: \"2 ломтика хлеба, 150–200 г курицы, немного соуса из йогурта и кетчупа, "
-                "кофе с молоком 1,5%, без сахара.\""
-            )
+        send_message(chat_id, TEXT[lang]["logging_help"])
         return "OK"
+
 
     # ==== РЕЖИМ ЕДЫ: Анализ через Mixtral ====
     ai_text = ai_meal_analysis(text_stripped, lang)
@@ -661,7 +681,9 @@ def telegram_webhook():
 
     if not ai_text or not total_kcal or total_kcal <= 0:
         send_message(chat_id, T["need_details"])
+        send_message(chat_id, TEXT[lang]["logging_help"])
         return "OK"
+
 
     kcal = int(total_kcal)
 
