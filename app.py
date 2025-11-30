@@ -17,7 +17,7 @@ AI_ENDPOINT = os.environ.get("AI_ENDPOINT")  # https://router.huggingface.co/v1/
 AI_KEY = os.environ.get("AI_KEY")            # hf_...
 AI_MODEL = os.environ.get(
     "AI_MODEL",
-    "meta-llama/Meta-Llama-3-8B-Instruct"    # можно переопределить в Render
+    "mistralai/Mixtral-8x7B-Instruct-v0.1"   # теперь по умолчанию Mixtral
 )
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
@@ -114,14 +114,15 @@ TEXT = {
             "Я не до конца разобрал, что именно и сколько ты съел 😅\n"
             "Попробуй описать ещё раз простыми словами: что было в тарелке и примерно сколько.\n"
             "Например: \"2 ломтика хлеба, курица примерно 150–200 г, немного соуса из греческого йогурта "
-            "и кетчупа (1 чайная ложка), кофе с молоком 1,5% и без сахара\"."
+            "и кетчупа (1 чайная ложка), кофе с молоком 1,5%, без сахара\"."
         ),
         "meal_count": "Приём пищи №{}",
         "daily_total": "Съедено за день: {} ккал",
         "daily_left": "Осталось до нормы: {} ккал",
         "need_profile_first": (
-            "Чтобы я точнее считал твою личную дневную норму и дефицит, заполни профиль.\n\n"
-            "Отправь /start, чтобы ещё раз получить шаблон профиля."
+            "Похоже, мы ещё не настроили профиль 😊\n\n"
+            "Нажми /start, выбери язык и заполни короткий профиль — "
+            "тогда я смогу считать твою дневную норму, дефицит и калории за день."
         ),
     },
     "en": {
@@ -150,8 +151,9 @@ TEXT = {
         "daily_total": "Total eaten today: {} kcal",
         "daily_left": "Remaining to your target: {} kcal",
         "need_profile_first": (
-            "To calculate your personal daily target and deficit more accurately, please set up your profile.\n\n"
-            "Send /start to get the profile template again."
+            "Looks like we haven’t set up your profile yet 😊\n\n"
+            "Send /start, choose your language and fill in a short profile — "
+            "then I’ll be able to calculate your daily target, deficit and calories."
         ),
     },
     "sr": {
@@ -179,8 +181,9 @@ TEXT = {
         "daily_total": "Ukupno danas: {} kcal",
         "daily_left": "Preostalo do tvoje norme: {} kcal",
         "need_profile_first": (
-            "Da bih preciznije računao tvoj lični dnevni limit i deficit, popuni profil.\n\n"
-            "Pošalji /start da ponovo dobiješ šablon profila."
+            "Izgleda da još nismo podesili tvoj profil 😊\n\n"
+            "Pošalji /start, izaberi jezik i popuni kratak profil — "
+            "onda mogu da računam tvoj dnevni limit, deficit i kalorije."
         ),
     },
 }
@@ -617,12 +620,14 @@ def telegram_webhook():
     essential_keys = ["age", "height", "weight", "goal", "activity_factor", "sex"]
     has_full_profile = bool(profile and all(profile.get(k) is not None for k in essential_keys))
 
-    # не похоже на еду
+    # === ЖЁСТКАЯ ПРОВЕРКА ПРОФИЛЯ: БЕЗ ПРОФИЛЯ НИЧЕГО НЕ СЧИТАЕМ ===
+    if not has_full_profile:
+        send_message(chat_id, T["need_profile_first"])
+        return "OK"
+
+    # Если это не еда — просто напоминаем, как логировать
     if not is_food_message(text_stripped):
-        if not has_full_profile:
-            send_message(chat_id, T["need_profile_first"])
-        else:
-            send_message(chat_id, build_logging_instructions(lang))
+        send_message(chat_id, build_logging_instructions(lang))
         return "OK"
 
     # ===== РЕЖИМ ЕДЫ: полный анализ через ИИ =====
@@ -671,26 +676,8 @@ def telegram_webhook():
             f"{T['daily_left'].format(max(left, 0))}"
         )
 
-    # если профиля нет — подсказка
-    if not has_full_profile:
-        if lang == "ru":
-            base_reply += (
-                "\n\n⚠️ Чтобы я точнее считал твою дневную норму и дефицит, "
-                "заполни профиль по шаблону (/start покажет его ещё раз)."
-            )
-        elif lang == "en":
-            base_reply += (
-                "\n\n⚠️ To get a more accurate daily target and deficit, "
-                "please fill in your profile template (send /start to see it again)."
-            )
-        else:
-            base_reply += (
-                "\n\n⚠️ Da bih preciznije računao tvoj dnevni limit i deficit, "
-                "popuni profil (/start prikazuje šablon ponovo)."
-            )
-
     # анализ переедания
-    if has_full_profile and new_total > target:
+    if new_total > target:
         over = new_total - target
         if lang == "ru":
             over_text = (
