@@ -240,6 +240,7 @@ def ask_ai_meal_analysis(meal_text, lang):
     Возвращаем (explanation_text, total_kcal) или (None, None).
     """
     if not AI_ENDPOINT or not AI_KEY:
+        print("AI config missing: AI_ENDPOINT or AI_KEY is empty")
         return None, None
 
     headers = {
@@ -251,12 +252,12 @@ def ask_ai_meal_analysis(meal_text, lang):
         system_prompt = (
             "Ты дружелюбный нутриционист. Тебе дают описание приёма пищи обычным человеческим языком.\n"
             "Твоя задача:\n"
-            "1) Разбить приём пищи на основные компоненты (2–7 пунктов) — хлеб, мясо, гарнир, соусы, кофе и т.п.\n"
+            "1) Разбить приём пищи на основные компоненты (2–7 пунктов).\n"
             "2) Для каждого компонента указать примерную калорийность.\n"
             "3) В конце посчитать суммарную калорийность этого приёма пищи.\n\n"
             "Пиши коротко, по делу, с лёгкой поддержкой и мотивацией.\n\n"
             "Формат ответа:\n"
-            "- Сначала текст с разбором (список продуктов и калорий).\n"
+            "- Сначала текст с разбором.\n"
             "- В САМОМ КОНЦЕ отдельная строка строго в формате:\n"
             "TOTAL_KCAL: XXX\n"
             "где XXX — общее количество ккал (целое число). Не пиши ничего после этой строки."
@@ -265,12 +266,12 @@ def ask_ai_meal_analysis(meal_text, lang):
         system_prompt = (
             "You are a friendly nutritionist. You receive a description of a meal in natural language.\n"
             "Your tasks:\n"
-            "1) Break the meal into main components (2–7 items) — bread, meat, side dish, sauces, coffee, etc.\n"
+            "1) Break the meal into main components (2–7 items).\n"
             "2) Give an approximate calorie value for each component.\n"
             "3) At the end, calculate the total kcal for the entire meal.\n\n"
             "Write briefly, clearly and with light support/motivation.\n\n"
             "Response format:\n"
-            "- First, a short explanation with the breakdown (list of foods and their kcal).\n"
+            "- First, a short explanation with the breakdown.\n"
             "- At the VERY END, a separate line in this exact format:\n"
             "TOTAL_KCAL: XXX\n"
             "where XXX is the total kcal (integer). Do not write anything after this line."
@@ -279,24 +280,22 @@ def ask_ai_meal_analysis(meal_text, lang):
         system_prompt = (
             "Ti si prijateljski nutricionista. Dobijaš opis obroka na prirodnom jeziku.\n"
             "Tvoj zadatak:\n"
-            "1) Podeli obrok na glavne komponente (2–7 stavki) — hleb, meso, prilog, sosevi, kafa itd.\n"
+            "1) Podeli obrok na glavne komponente (2–7 stavki).\n"
             "2) Za svaku komponentu daj približnu kalorijsku vrednost.\n"
             "3) Na kraju izračunaj ukupan broj kalorija za ceo obrok.\n\n"
             "Piši kratko, jasno, uz blagu podršku i motivaciju.\n\n"
             "Format odgovora:\n"
-            "- Prvo kratko objašnjenje sa spiskom namirnica i njihovim kcal.\n"
+            "- Prvo kratko objašnjenje sa spiskom namirnica i kcal.\n"
             "- NA SAMOM KRAJU posebna linija u formatu:\n"
             "TOTAL_KCAL: XXX\n"
             "gde je XXX ukupan broj kcal (ceo broj). Ne piši ništa posle ove linije."
         )
 
-    user_text = meal_text
-
     payload = {
         "model": AI_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": meal_text},
         ],
         "temperature": 0.4,
         "max_tokens": 512,
@@ -304,11 +303,25 @@ def ask_ai_meal_analysis(meal_text, lang):
 
     try:
         r = requests.post(AI_ENDPOINT, headers=headers, json=payload, timeout=60)
-        data = r.json()
-        content = data["choices"][0]["message"]["content"]
+
+        # Временный дебаг: увидим статус и сырой текст
+        try:
+            data = r.json()
+        except Exception:
+            print("AI meal analysis: non-JSON response:", r.status_code, r.text[:500])
+            return None, None
+
+        # Если нет choices — логируем, что пришло, и выходим
+        choices = data.get("choices")
+        if not choices:
+            print("AI meal analysis: response without 'choices':", data)
+            return None, None
+
+        content = choices[0]["message"]["content"]
 
         m = re.search(r"TOTAL_KCAL:\s*(\d+(?:\.\d+)?)", content)
         if not m:
+            print("AI meal analysis: no TOTAL_KCAL in content:", content)
             return None, None
         total_kcal = float(m.group(1))
 
@@ -317,9 +330,11 @@ def ask_ai_meal_analysis(meal_text, lang):
         explanation = "\n".join(cleaned_lines).strip()
 
         return explanation, total_kcal
+
     except Exception as e:
-        print("AI meal analysis error:", e)
+        print("AI meal analysis error:", repr(e))
         return None, None
+
 
 
 # ================================
