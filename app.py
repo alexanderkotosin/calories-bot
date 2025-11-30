@@ -264,11 +264,20 @@ def save_profile(user_id, new_data):
 
 
 def parse_profile(text: str):
+    """
+    Парсим профиль без двоеточий:
+    'Возраст 34 Рост 181 Вес 88 Цель вес 84 Пол м Активность средняя'
+    Допускаем лишние слова между меткой и числом (например, 'цель вес 84').
+    """
     t = text.lower()
 
     def find_value(keywords):
+        """
+        Ищем число ПОСЛЕ одного из ключевых слов.
+        Разрешаем любые нецифровые символы между словом и числом.
+        """
         for word in keywords:
-            pattern = rf"{word}\s+(\d+)"
+            pattern = rf"{re.escape(word)}[^\d\-]*?(\d+)"
             m = re.search(pattern, t)
             if m:
                 return int(m.group(1))
@@ -277,12 +286,16 @@ def parse_profile(text: str):
     age = find_value(["возраст", "age", "godine"])
     height = find_value(["рост", "height", "visina"])
     weight = find_value(["вес", "weight", "težina", "tezina"])
-    goal = find_value(["цель", "goal", "cilj", "ciljna"])
+    goal = find_value([
+        "цель вес", "цель", "goal weight", "goal", "ciljna težina", "ciljna tezina", "cilj"
+    ])
 
+    # пол
     sex = "m"
-    if any(x in t for x in [" ж", " f", "female", "ž", " жен", "жен "]):
+    if any(x in t for x in [" ж", " женщина", "жен ", "f", "female", " ž", "žena"]):
         sex = "f"
 
+    # активность
     if "низк" in t or "low" in t or "niska" in t:
         activity = 1.2
     elif "средн" in t or "medium" in t or "srednja" in t:
