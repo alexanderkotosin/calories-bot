@@ -205,9 +205,12 @@ TEXT = {
 # HUGGINGFACE INFERENCE HELPER
 # =======================================
 
+
 def call_hf_inference(prompt: str):
     """
-    Универсальный хелпер для Mixtral через Inference API.
+    Вызов Mixtral через HuggingFace Router (OpenAI-совместимый чат-эндпоинт).
+    AI_ENDPOINT должен быть:
+    https://router.huggingface.co/v1/chat/completions
     """
     if not AI_ENDPOINT or not AI_KEY:
         print("HF config missing")
@@ -219,20 +222,21 @@ def call_hf_inference(prompt: str):
     }
 
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 512,
-            "temperature": 0.4,
-            "return_full_text": False,
-        },
+        "model": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 512,
     }
 
     try:
         r = requests.post(AI_ENDPOINT, headers=headers, json=payload, timeout=40)
         data = r.json()
 
-        if isinstance(data, list) and data and "generated_text" in data[0]:
-            return data[0]["generated_text"]
+        # Ожидаем OpenAI-формат: { choices: [ { message: { content: "..." } } ] }
+        if isinstance(data, dict) and "choices" in data and data["choices"]:
+            return data["choices"][0]["message"]["content"]
 
         if isinstance(data, dict) and "error" in data:
             print("HF API ERROR:", data["error"])
@@ -244,6 +248,7 @@ def call_hf_inference(prompt: str):
     except Exception as e:
         print("HF REQUEST ERROR:", e)
         return None
+
 
 
 # =======================================
