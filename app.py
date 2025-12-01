@@ -216,7 +216,7 @@ def call_hf_inference(prompt: str):
     """
     Вызов Mixtral через HuggingFace Router как text-completion модель.
     AI_ENDPOINT: https://router.huggingface.co/v1/completions
-    AI_MODEL: например, mistralai/Mixtral-8x7B-Instruct-v0.1
+    AI_MODEL: напр. mistralai/Mixtral-8x7B-Instruct-v0.1
     """
     if not AI_ENDPOINT or not AI_KEY:
         print("HF config missing")
@@ -236,28 +236,40 @@ def call_hf_inference(prompt: str):
 
     try:
         r = requests.post(AI_ENDPOINT, headers=headers, json=payload, timeout=40)
-        data = r.json()
 
-        # Ожидаем OpenAI-совместимый формат completions:
-        # { choices: [ { text: "..." } ] }
-        if isinstance(data, dict) and "choices" in data and data["choices"]:
-            choice = data["choices"][0]
-            # иногда text, иногда message.content — подстрахуемся
-            if "text" in choice and choice["text"]:
-                return choice["text"]
-            if "message" in choice and "content" in choice["message"]:
-                return choice["message"]["content"]
-
-        if isinstance(data, dict) and "error" in data:
-            print("HF API ERROR:", data["error"])
+        # если пришёл не 2xx — сразу покажем статус и тело
+        if r.status_code < 200 or r.status_code >= 300:
+            print("HF NON-200 RESPONSE:", r.status_code, r.text[:500])
             return None
 
-        print("HF unexpected response:", data)
+        try:
+            data = r.json()
+        except Exception as e:
+            # тело не похоже на JSON — логируем как есть
+            print("HF JSON DECODE ERROR:", e, "RAW:", r.text[:500])
+            return None
+
+        # Ожидаемый формат completions: { choices: [ { text: "..." } ] }
+        if isinstance(data, dict) and "choices" in data and data["choices"]:
+            choice = data["choices"][0]
+            if isinstance(choice, dict):
+                if "text" in choice and choice["text"]:
+                    return choice["text"]
+                if "message" in choice and isinstance(choice["message"], dict):
+                    if "content" in choice["message"]:
+                        return choice["message"]["content"]
+
+        if isinstance(data, dict) and "error" in data:
+            print("HF API ERROR (JSON):", data["error"])
+            return None
+
+        print("HF unexpected JSON:", data)
         return None
 
     except Exception as e:
-        print("HF REQUEST ERROR:", e)
+        print("HF REQUEST ERROR (EXCEPTION):", e)
         return None
+
 
 
 
