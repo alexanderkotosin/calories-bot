@@ -18,6 +18,12 @@ SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
 AI_ENDPOINT = os.environ.get("AI_ENDPOINT")
 AI_KEY = os.environ.get("AI_KEY")
 
+AI_MODEL = os.environ.get(
+    "AI_MODEL",
+    "mistralai/Mixtral-8x7B-Instruct-v0.1",  # дефолт, если ENV не задан
+)
+
+
 app = Flask(__name__)
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -208,9 +214,9 @@ TEXT = {
 
 def call_hf_inference(prompt: str):
     """
-    Вызов Mixtral через HuggingFace Router (OpenAI-совместимый чат-эндпоинт).
-    AI_ENDPOINT должен быть:
-    https://router.huggingface.co/v1/chat/completions
+    Вызов Mixtral через HuggingFace Router как text-completion модель.
+    AI_ENDPOINT: https://router.huggingface.co/v1/completions
+    AI_MODEL: например, mistralai/Mixtral-8x7B-Instruct-v0.1
     """
     if not AI_ENDPOINT or not AI_KEY:
         print("HF config missing")
@@ -222,21 +228,25 @@ def call_hf_inference(prompt: str):
     }
 
     payload = {
-        "model": "mistralai/Mixtral-8x7B-Instruct-v0.1",
-        "messages": [
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.4,
+        "model": AI_MODEL,
+        "prompt": prompt,
         "max_tokens": 512,
+        "temperature": 0.4,
     }
 
     try:
         r = requests.post(AI_ENDPOINT, headers=headers, json=payload, timeout=40)
         data = r.json()
 
-        # Ожидаем OpenAI-формат: { choices: [ { message: { content: "..." } } ] }
+        # Ожидаем OpenAI-совместимый формат completions:
+        # { choices: [ { text: "..." } ] }
         if isinstance(data, dict) and "choices" in data and data["choices"]:
-            return data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            # иногда text, иногда message.content — подстрахуемся
+            if "text" in choice and choice["text"]:
+                return choice["text"]
+            if "message" in choice and "content" in choice["message"]:
+                return choice["message"]["content"]
 
         if isinstance(data, dict) and "error" in data:
             print("HF API ERROR:", data["error"])
@@ -248,6 +258,7 @@ def call_hf_inference(prompt: str):
     except Exception as e:
         print("HF REQUEST ERROR:", e)
         return None
+
 
 
 
